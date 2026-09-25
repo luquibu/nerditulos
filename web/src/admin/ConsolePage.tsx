@@ -6,7 +6,7 @@ import { IconFileAudio, IconMic, IconTriangleAlert, IconUser, StatusIcon } from 
 import { hrefWithLang, langFromSearch } from '../language.js';
 import { useLanguage } from '../LanguageProvider.js';
 import { LanguageSwitch } from '../LanguageSwitch.js';
-import { adminPath, navigate, replace } from '../router.js';
+import { adminPath, navigate, onLinkClick, replace } from '../router.js';
 import { formatDbfs, meterFraction, NO_SIGNAL_RMS, toDbfs } from './capture/level.js';
 import { noticeText } from './capture/notices.js';
 import { testEndMessage } from './capture/preview.js';
@@ -180,7 +180,9 @@ export function ConsolePage({ config, roomSlug }: { config: RuntimeConfig; roomS
         {d.skipToContent}
       </a>
       <header className="console__header">
-        <img className="console__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
+        <a href={hrefWithLang('/', langFromSearch(window.location.search))} onClick={onLinkClick} aria-label={d.roomsLink}>
+          <img className="console__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
+        </a>
         {config.demoMode && <span className="chip chip--status-warning">{d.demoChip}</span>}
         <span className="console__spacer" />
         {/* Interface language only: a session's source language is chosen per session below. */}

@@ -47,7 +47,9 @@ export function RoomsPage({ config }: { config: RuntimeConfig }) {
       </a>
       <header className="listener__header">
         <div className="listener__brand">
-          <img className="listener__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
+          <a href={hrefWithLang('/', explicitLang)} onClick={onLinkClick} aria-label={d.roomsLink}>
+            <img className="listener__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
+          </a>
           <LanguageSwitch />
           {config.demoMode && (
             <>

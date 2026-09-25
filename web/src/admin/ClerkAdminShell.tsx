@@ -2,8 +2,10 @@ import { useEffect, useMemo } from 'react';
 import { enUS } from '@clerk/localizations/en-US';
 import { esES } from '@clerk/localizations/es-ES';
 import { ClerkProvider, Show, SignIn, useAuth, useClerk, useUser } from '@clerk/react';
+import { hrefWithLang, langFromSearch } from '../language.js';
 import { useLanguage } from '../LanguageProvider.js';
 import { LanguageSwitch } from '../LanguageSwitch.js';
+import { onLinkClick } from '../router.js';
 import type { AdminShellProps } from './AdminShell.js';
 import { registerTokenSupplier } from './capture/registry.js';
 import { ConsolePage } from './ConsolePage.js';
@@ -24,7 +26,9 @@ function ConsoleFrame({ d, children }: { d: ConsoleStrings; children: React.Reac
         {d.skipToContent}
       </a>
       <header className="console__header">
-        <img className="console__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
+        <a href={hrefWithLang('/', langFromSearch(window.location.search))} onClick={onLinkClick} aria-label={d.roomsLink}>
+          <img className="console__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
+        </a>
         <span className="console__spacer" />
         <LanguageSwitch />
       </header>
