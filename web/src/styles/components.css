@@ -44,6 +44,16 @@ select.field__input option { background: var(--surface); }
 .switch[aria-checked='true'] .switch__track { background: var(--accent-1-fill); }
 .switch[aria-checked='true'] .switch__thumb { transform: translateX(16px); background: var(--accent-1-fg); }
 
+/* Segmented ES | EN control of the interface language. No `overflow: hidden`: it would clip the global focus ring. */
+.lang-switch { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius-full); }
+.lang-switch__option { min-width: 44px; min-height: 36px; padding: 0 var(--space-3); border: 0; background: transparent; color: var(--text-secondary); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
+.lang-switch__option:first-child { border-radius: var(--radius-full) 0 0 var(--radius-full); }
+.lang-switch__option:last-child { border-radius: 0 var(--radius-full) var(--radius-full) 0; }
+.lang-switch__option:hover { color: var(--text); }
+.lang-switch__option[aria-pressed='true'] { background: var(--accent-1-fill); color: var(--accent-1-fg); cursor: default; }
+.listener__brand .lang-switch { margin-inline-start: auto; }
+.rooms .lang-switch { justify-self: end; }
+
 /* Tabs */
 .tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .tab {
@@ -147,10 +157,29 @@ dialog.modal::backdrop { background: var(--scrim); }
 .row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
 .checks { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .checks li { display: flex; gap: var(--space-2); align-items: center; font-size: var(--text-sm); color: var(--text-secondary); min-height: 24px; }
-.check-preview { font-size: var(--text-lg); color: var(--text-secondary); min-height: 3em; }
+/* Source-test preview: the attendee's reading surface, so the console sees what a reader would. */
+.check-preview {
+  font: var(--text-xl) / var(--reading-leading) var(--font-reading); color: var(--reading-fg); background: var(--reading-bg);
+  max-width: var(--reading-measure); min-height: 3em; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); overflow-wrap: anywhere;
+}
 .check-preview__partial { opacity: 0.7; }
+.check-preview__empty { color: var(--text-muted); font: var(--text-sm) var(--font-ui); }
 .meter { height: 6px; background: var(--surface); border-radius: var(--radius-full); overflow: hidden; }
 .meter__fill { height: 100%; background: var(--status-ok); width: 0; transition: width var(--transition-fast); }
+.meter--level { height: 10px; position: relative; }
+.meter--clipping .meter__fill { background: var(--status-error); }
+.meter__peak { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); transition: left var(--transition-fast); }
+.meter__threshold { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-hover); }
+.meter__readout { font-variant-numeric: tabular-nums; min-height: 24px; }
+.card__meta--quiet { color: var(--text-muted); }
+.switch:disabled { opacity: 0.45; cursor: not-allowed; }
+.test-stage { border-top: 1px solid var(--line); padding-top: var(--space-4); }
+.test-stage__warning { font-size: var(--text-sm); color: var(--status-warning); }
+.test-stage__end { font-size: var(--text-sm); color: var(--text-secondary); }
+.test-stage__end--warning { color: var(--status-warning); }
+.test-stage__end--error { color: var(--status-error); }
+.start-warning { display: inline-flex; gap: var(--space-1); align-items: center; font-size: var(--text-xs); color: var(--status-warning); }
+.start-warning svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none; flex: none; }
 .session-list { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
 .session-list__item { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--bg-card); font-size: var(--text-sm); }
 .session-list__title { font-weight: 600; }

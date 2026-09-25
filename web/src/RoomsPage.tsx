@@ -1,18 +1,15 @@
 import { useEffect, useState } from 'react';
-import type { PublicRoom, RuntimeConfig, SessionState } from '@nerditulos/shared';
+import type { PublicRoom, RuntimeConfig } from '@nerditulos/shared';
 import { fetchRooms } from './api.js';
-import { stateLabel, strings, type StateLabel } from './i18n.js';
-import { hrefWithLang, langFromSearch, useReaderLanguage } from './readerLanguage.js';
+import { stateLabel, strings } from './i18n.js';
+import { hrefWithLang, langFromSearch } from './language.js';
+import { useLanguage } from './LanguageProvider.js';
+import { LanguageSwitch } from './LanguageSwitch.js';
 import { onLinkClick } from './router.js';
 
-/** Session state label in Spanish, for the console, which is not translated. */
-export function sessionStateLabel(state: SessionState | null | undefined): StateLabel {
-  return stateLabel(strings('es'), state);
-}
-
 export function RoomsPage({ config }: { config: RuntimeConfig }) {
-  const [readerLang] = useReaderLanguage();
-  const d = strings(readerLang);
+  const [lang] = useLanguage();
+  const d = strings(lang);
   // Room links keep only an explicit `?lang`, so a shared link to `/` carries its language into the rooms.
   const explicitLang = langFromSearch(window.location.search);
   const [rooms, setRooms] = useState<PublicRoom[] | null>(null);
@@ -51,6 +48,7 @@ export function RoomsPage({ config }: { config: RuntimeConfig }) {
       <header className="listener__header">
         <div className="listener__brand">
           <img className="listener__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
+          <LanguageSwitch />
         </div>
         <h1 className="listener__title">{config.eventName ? d.roomsTitleFor(config.eventName) : d.roomsTitle}</h1>
         <p className="card__meta">{d.roomsIntro}</p>

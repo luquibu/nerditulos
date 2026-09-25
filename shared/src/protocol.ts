@@ -125,8 +125,20 @@ export interface StateEvent {
 export type EndReason = 'finish' | 'file_end';
 export type DetachReason = 'device_lost';
 
+/**
+ * Source test: the console checks a room's audio source against the recognition provider without a
+ * session. Nothing is persisted or published; the socket only echoes the recognized original text.
+ */
+export interface SourceTestTarget {
+  room: string;
+  sourceLanguage: SourceLanguage;
+}
+
+export type SourceTestEndReason = 'stopped' | 'provider_error' | 'provider_closed' | 'time_limit' | 'session_started';
+
 export type SenderClientMessage =
-  | { type: 'auth'; token: string; sessionId?: string; format?: AudioFormat }
+  /** `sessionId` and `test` are exclusive: a session sender or a source test, never both. */
+  | { type: 'auth'; token: string; sessionId?: string; test?: SourceTestTarget; format?: AudioFormat }
   | { type: 'pause' }
   | { type: 'resume' }
   | { type: 'end'; reason: EndReason }
@@ -161,8 +173,21 @@ export type SenderServerMessage =
       completeness: Completeness | null;
       storage: StorageStatus;
     }
-  | { type: 'discontinuity'; detail: DiscontinuityDetail };
+  | { type: 'discontinuity'; detail: DiscontinuityDetail }
+  | { type: 'test'; state: 'listening' }
+  /** `code` is the provider's error code or its close code, when there is one. */
+  | { type: 'test'; state: 'ended'; reason: SourceTestEndReason; code?: number }
+  /** `final` is the text finalized by this response (may be empty, keeps its leading space); `partial` replaces the previous hypothesis. */
+  | { type: 'preview'; final: string; partial: string };
 
+/**
+ * Close reasons by code. The server sends the typed message (`rejected`, or `test ended` for a
+ * source test) before closing.
+ * 4404: session-not-joinable, missing-target, ambiguous-target, invalid-test, invalid-language, room-not-found, finished.
+ * 4409: sender-active, generation-draining, storage-unavailable, room-busy, test-active.
+ * 4410: detached, provider-error, provider-unavailable, storage-unavailable, provider-closed, time-limit, session-started.
+ * 1000: stopped (source test ended by its sender).
+ */
 export const SENDER_CLOSE = {
   UNAUTHENTICATED: 4401,
   FORBIDDEN: 4403,

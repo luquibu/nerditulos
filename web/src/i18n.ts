@@ -1,14 +1,18 @@
-// Interface strings of the public pages (rooms list, reader, not found). The console stays Spanish.
+// Interface strings of the public chunk (rooms list, reader, not found, and what the app shell renders
+// before the console loads). The console's own table extends this one in `admin/consoleStrings.ts`.
 // Pure: no DOM and no React, so the tables and helpers are unit-testable in node.
 import type { InterruptionCause, SessionState, SessionSummary } from '@nerditulos/shared';
 
-export type ReaderLanguage = 'es' | 'en';
+export type Language = 'es' | 'en';
 
-export const READER_LANGUAGES: readonly ReaderLanguage[] = ['es', 'en'];
+export const LANGUAGES: readonly Language[] = ['es', 'en'];
 
-export function isReaderLanguage(value: unknown): value is ReaderLanguage {
+export function isLanguage(value: unknown): value is Language {
   return value === 'es' || value === 'en';
 }
+
+/** Each language named in itself, for the language switch and the session's language chip. */
+export const LANGUAGE_NATIVE_NAMES: Record<Language, string> = { es: 'Español', en: 'English' };
 
 export type StateStatus = 'live' | 'ok' | 'warning' | 'error' | 'off';
 
@@ -57,14 +61,18 @@ export interface Strings {
   languageLabel: string;
   announceToggle: string;
   /** Language names as nouns of this interface language, for the fallback notice. */
-  languageName: Record<ReaderLanguage, string>;
+  languageName: Record<Language, string>;
   /** Shown when the session lacks the reader's language and another stream is displayed instead. */
   languageFallbackNotice: (wanted: string, shown: string) => string;
   /** Tooltip of a lost stretch; `seconds` is already formatted, or null when the extent is unknown. */
   gapTitle: (seconds: string | null) => string;
+  /** Suspense fallback while the console chunk loads. */
+  loadingAdmin: string;
+  /** Rendered by the entry point when the runtime configuration cannot be fetched. */
+  configLoadFailed: string;
 }
 
-export const STRINGS: Record<ReaderLanguage, Strings> = {
+export const STRINGS: Record<Language, Strings> = {
   es: {
     appTitle: 'Subtítulos',
     roomsTitle: 'Salas',
@@ -104,6 +112,8 @@ export const STRINGS: Record<ReaderLanguage, Strings> = {
     languageName: { es: 'español', en: 'inglés' },
     languageFallbackNotice: (wanted, shown) => `Esta sesión no ofrece ${wanted}; se muestra ${shown}.`,
     gapTitle: (seconds) => (seconds === null ? 'Tramo perdido de extensión desconocida' : `Tramo perdido: ${seconds} s`),
+    loadingAdmin: 'Cargando administración…',
+    configLoadFailed: 'No se pudo cargar la configuración. Recargá la página.',
   },
   en: {
     appTitle: 'Captions',
@@ -144,10 +154,12 @@ export const STRINGS: Record<ReaderLanguage, Strings> = {
     languageName: { es: 'Spanish', en: 'English' },
     languageFallbackNotice: (wanted, shown) => `This session does not offer ${wanted}; showing ${shown}.`,
     gapTitle: (seconds) => (seconds === null ? 'Lost stretch of unknown length' : `Lost stretch: ${seconds} s`),
+    loadingAdmin: 'Loading administration…',
+    configLoadFailed: 'The configuration could not be loaded. Reload the page.',
   },
 };
 
-export function strings(lang: ReaderLanguage): Strings {
+export function strings(lang: Language): Strings {
   return STRINGS[lang];
 }
 

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { RuntimeConfig, SessionSummary } from '@nerditulos/shared';
 import { ApiError, fetchRoom } from '../api.js';
-import { isReaderLanguage, readerStateText, strings } from '../i18n.js';
-import { hrefWithLang, langFromSearch, parseReaderLanguage, useReaderLanguage } from '../readerLanguage.js';
+import { isLanguage, readerStateText, strings } from '../i18n.js';
+import { hrefWithLang, langFromSearch, parseLanguage } from '../language.js';
+import { useLanguage } from '../LanguageProvider.js';
 import { debugEnabled, onLinkClick } from '../router.js';
 import { Caption } from './Caption.js';
 import { streamLanguageFor, useCaptionStream, type CaptionDebugLine } from './useCaptionStream.js';
@@ -10,7 +11,7 @@ import { streamLanguageFor, useCaptionStream, type CaptionDebugLine } from './us
 const FOLLOW_THRESHOLD_PX = 80;
 
 export function RoomPage({ config, slug }: { config: RuntimeConfig; slug: string }) {
-  const [readerLang, setReaderLang] = useReaderLanguage();
+  const [readerLang, setReaderLang] = useLanguage();
   const d = strings(readerLang);
   const [roomInfo, setRoomInfo] = useState<{ name: string; index: number; session: SessionSummary | null } | null>(null);
   const [roomError, setRoomError] = useState<'not_found' | 'load_error' | null>(null);
@@ -141,7 +142,7 @@ export function RoomPage({ config, slug }: { config: RuntimeConfig; slug: string
   const streamLabel = session?.availableLanguages.find((l) => l.lang === streamLang)?.label ?? null;
   // Derived from the session rather than from `streamLang`, which lags one effect behind a language change.
   const shownLang = session ? streamLanguageFor(readerLang, session) : readerLang;
-  const shownName = isReaderLanguage(shownLang) ? d.languageName[shownLang] : (session?.availableLanguages.find((l) => l.lang === shownLang)?.label ?? shownLang);
+  const shownName = isLanguage(shownLang) ? d.languageName[shownLang] : (session?.availableLanguages.find((l) => l.lang === shownLang)?.label ?? shownLang);
   const roomsHref = hrefWithLang('/', explicitLang);
 
   return (
@@ -225,7 +226,7 @@ export function RoomPage({ config, slug }: { config: RuntimeConfig; slug: string
           value={session ? (streamLang ?? '') : ''}
           disabled={!session || session.availableLanguages.length === 0}
           onChange={(e) => {
-            const next = parseReaderLanguage(e.target.value);
+            const next = parseLanguage(e.target.value);
             if (next) setReaderLang(next);
           }}
         >

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { InterruptionCause, SessionState } from '@nerditulos/shared';
-import { READER_LANGUAGES, STRINGS, isReaderLanguage, readerStateText, stateLabel, strings } from './i18n.js';
-import { sessionStateLabel } from './RoomsPage.js';
+import { LANGUAGES, LANGUAGE_NATIVE_NAMES, STRINGS, isLanguage, readerStateText, stateLabel, strings } from './i18n.js';
 
 const es = strings('es');
 const en = strings('en');
@@ -9,9 +8,16 @@ const en = strings('en');
 describe('strings', () => {
   it('has the same keys in both languages', () => {
     expect(Object.keys(STRINGS.en).sort()).toEqual(Object.keys(STRINGS.es).sort());
-    expect(READER_LANGUAGES).toEqual(['es', 'en']);
-    expect(isReaderLanguage('en')).toBe(true);
-    expect(isReaderLanguage('pt')).toBe(false);
+    expect(LANGUAGES).toEqual(['es', 'en']);
+    expect(isLanguage('en')).toBe(true);
+    expect(isLanguage('pt')).toBe(false);
+  });
+
+  it('names each language in itself and has the shell strings in both languages', () => {
+    expect(Object.keys(LANGUAGE_NATIVE_NAMES).sort()).toEqual([...LANGUAGES].sort());
+    expect(LANGUAGE_NATIVE_NAMES).toEqual({ es: 'Español', en: 'English' });
+    expect(es.loadingAdmin).not.toBe(en.loadingAdmin);
+    expect(es.configLoadFailed).not.toBe(en.configLoadFailed);
   });
 
   it('composes the fallback notice from language names of the interface language', () => {
@@ -41,11 +47,6 @@ describe('stateLabel', () => {
   it.each(cases)('labels %s in both languages with its status', (state, spanish, english, status) => {
     expect(stateLabel(es, state)).toEqual({ text: spanish, status });
     expect(stateLabel(en, state)).toEqual({ text: english, status });
-  });
-
-  it('keeps the console label Spanish through sessionStateLabel', () => {
-    for (const [state, spanish, , status] of cases) expect(sessionStateLabel(state)).toEqual({ text: spanish, status });
-    expect(sessionStateLabel(null)).toEqual({ text: 'Sin sesión', status: 'off' });
   });
 });
 

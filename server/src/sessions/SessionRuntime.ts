@@ -1,18 +1,13 @@
-import { SENDER_CLOSE, type AudioFrame, type Completeness, type DetachReason, type DiscontinuityDetail, type EndReason, type InterruptionCause, type OutputType, type SenderServerMessage, type SessionState, type StorageStatus } from '@nerditulos/shared';
+import { SENDER_CLOSE, type AudioFrame, type Completeness, type DetachReason, type DiscontinuityDetail, type EndReason, type InterruptionCause, type OutputType, type SessionState, type StorageStatus } from '@nerditulos/shared';
 import type { Logger } from '../log.js';
 import { createHubStream, type HubSession, type StreamHub } from '../public/streamHub.js';
 import type { ProviderConnection, ProviderFactory, SonioxResponse } from '../provider/soniox.js';
 import { TokenState, type FinalPart } from '../text/tokenState.js';
 import { summaryOf, translationTargetOf } from './recovery.js';
+import type { SenderLink, SenderLostReason, SenderTarget } from './senderTarget.js';
 import type { FinalChunkInsert, RoomRow, SessionRow, SessionStore, StreamRow, StreamSpec } from './SessionStore.js';
 
-export interface SenderLink {
-  readonly id: number;
-  send(message: SenderServerMessage): void;
-  close(code: number, reason: string): void;
-}
-
-export type SenderLostReason = 'device_lost' | 'socket_closed' | 'pong_timeout' | 'auth_expired';
+export type { SenderLink, SenderLostReason } from './senderTarget.js';
 
 export interface RuntimeConfig {
   drainTimeoutMs: number;
@@ -31,6 +26,8 @@ export interface RuntimeConfig {
   /** Provider send buffer above which server drops start (5 s of audio). */
   providerBufferLimit?: number;
   statementTimeoutMs?: number;
+  /** Wall-clock cap of a source test (default 5 minutes): each one holds a provider connection. */
+  sourceTestMaxMs?: number;
 }
 
 export interface RuntimeDeps {
@@ -80,7 +77,7 @@ interface ChainItem {
 
 const DEFAULT_BACKOFF = [1000, 2000, 5000, 10000];
 
-export class SessionRuntime {
+export class SessionRuntime implements SenderTarget {
   readonly id: string;
   state: SessionState;
   cause: InterruptionCause | null;

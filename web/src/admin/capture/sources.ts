@@ -4,33 +4,35 @@ export type SourceKind = 'microphone' | 'file';
 
 export interface DeviceOption {
   deviceId: string;
+  /** The browser's label; empty until permission is granted, in which case the console names the device by position. */
   label: string;
 }
 
 export type MediaErrorCode = 'permission_denied' | 'no_device' | 'device_busy' | 'constraints' | 'aborted' | 'insecure_context' | 'unsupported' | 'unknown';
 
-export function mapMediaError(error: unknown): { code: MediaErrorCode; message: string } {
+/** The reason `getUserMedia` failed, by exception name; the console translates it. */
+export function mediaErrorCode(error: unknown): MediaErrorCode {
   const name = error instanceof DOMException ? error.name : error instanceof Error ? error.name : '';
   switch (name) {
     case 'NotAllowedError':
     case 'PermissionDeniedError':
-      return { code: 'permission_denied', message: 'Permiso de micrófono denegado. Habilitalo en el navegador y volvé a intentar.' };
+      return 'permission_denied';
     case 'NotFoundError':
     case 'DevicesNotFoundError':
-      return { code: 'no_device', message: 'No se encontró ningún micrófono.' };
+      return 'no_device';
     case 'NotReadableError':
     case 'TrackStartError':
-      return { code: 'device_busy', message: 'El micrófono está en uso por otra aplicación o no responde.' };
+      return 'device_busy';
     case 'OverconstrainedError':
-      return { code: 'constraints', message: 'El dispositivo elegido ya no está disponible. Elegí otro.' };
+      return 'constraints';
     case 'AbortError':
-      return { code: 'aborted', message: 'La captura se interrumpió antes de empezar.' };
+      return 'aborted';
     case 'SecurityError':
-      return { code: 'insecure_context', message: 'El navegador bloqueó el micrófono en este contexto (se requiere HTTPS).' };
+      return 'insecure_context';
     case 'TypeError':
-      return { code: 'unsupported', message: 'Este navegador no admite la captura de audio necesaria.' };
+      return 'unsupported';
     default:
-      return { code: 'unknown', message: 'No se pudo acceder al micrófono.' };
+      return 'unknown';
   }
 }
 
@@ -71,9 +73,7 @@ export async function requestMicrophone(context: AudioContext, deviceId?: string
 export async function listMicrophones(): Promise<DeviceOption[]> {
   if (!navigator.mediaDevices?.enumerateDevices) return [];
   const devices = await navigator.mediaDevices.enumerateDevices();
-  return devices
-    .filter((d) => d.kind === 'audioinput')
-    .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Micrófono ${i + 1}` }));
+  return devices.filter((d) => d.kind === 'audioinput').map((d) => ({ deviceId: d.deviceId, label: d.label }));
 }
 
 export function openFile(context: AudioContext, file: File): FileSource {
@@ -100,15 +100,4 @@ export function releaseSource(source: CaptureSource) {
     source.element.load();
     URL.revokeObjectURL(source.objectUrl);
   }
-}
-
-/** RMS of an Int16 chunk in [0, 1]. */
-export function rms(pcm: Int16Array): number {
-  if (pcm.length === 0) return 0;
-  let sum = 0;
-  for (let i = 0; i < pcm.length; i++) {
-    const v = (pcm[i] as number) / 32768;
-    sum += v * v;
-  }
-  return Math.sqrt(sum / pcm.length);
 }

@@ -1,11 +1,11 @@
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
-import { AUDIO_FORMAT, decodeFrame, FRAME_MAX_BYTES, SENDER_CLOSE, type AudioFormat, type SenderClientMessage, type SenderServerMessage } from '@nerditulos/shared';
+import { AUDIO_FORMAT, decodeFrame, FRAME_MAX_BYTES, SENDER_CLOSE, type AudioFormat, type SenderClientMessage, type SenderServerMessage, type SourceTestTarget } from '@nerditulos/shared';
 import type { AdminVerifier } from '../auth/token.js';
 import type { Logger } from '../log.js';
+import type { SenderLink, SenderLostReason, SenderTarget } from '../sessions/senderTarget.js';
 import type { SessionManager } from '../sessions/SessionManager.js';
-import type { SenderLink, SenderLostReason, SessionRuntime } from '../sessions/SessionRuntime.js';
 
 export const SENDER_PATH = '/ws/sender';
 
@@ -29,6 +29,14 @@ function formatMatches(format: unknown): format is AudioFormat {
   return f.encoding === AUDIO_FORMAT.encoding && f.sampleRate === AUDIO_FORMAT.sampleRate && f.channels === AUDIO_FORMAT.channels && f.chunkSamples === AUDIO_FORMAT.chunkSamples;
 }
 
+function parseTestTarget(test: unknown): { ok: true; target: SourceTestTarget } | { ok: false; reason: 'invalid-test' | 'invalid-language' } {
+  if (!test || typeof test !== 'object') return { ok: false, reason: 'invalid-test' };
+  const t = test as Record<string, unknown>;
+  if (typeof t.room !== 'string' || t.room.length === 0 || t.room.length > 64) return { ok: false, reason: 'invalid-test' };
+  if (t.sourceLanguage !== 'es' && t.sourceLanguage !== 'en') return { ok: false, reason: 'invalid-language' };
+  return { ok: true, target: { room: t.room, sourceLanguage: t.sourceLanguage } };
+}
+
 type AuthStatus = 'pending' | 'authorized' | 'unauthorized';
 
 /** One sender connection. Exported for tests, which drive it with a fake socket. */
@@ -39,8 +47,9 @@ export class SenderConnection {
   private status: AuthStatus = 'pending';
   private userId: string | null = null;
   private authorizedUntil = 0;
-  private runtime: SessionRuntime | null = null;
-  private sessionId: string | null = null;
+  private runtime: SenderTarget | null = null;
+  /** Log context once attached: the session, or the room under test. */
+  private target: { sessionId?: string; room?: string } = {};
   private lostReason: SenderLostReason | null = null;
   private closedByRuntime = false;
   private authTimer: NodeJS.Timeout | null = null;
@@ -183,7 +192,13 @@ export class SenderConnection {
     }
   }
 
-  private async onAuth(message: { token?: unknown; sessionId?: unknown; format?: unknown }) {
+  private reject(reason: string, code: number, lostReason?: SenderLostReason) {
+    this.send({ type: 'rejected', reason });
+    if (lostReason) this.lostReason = lostReason;
+    this.close(code, reason);
+  }
+
+  private async onAuth(message: { token?: unknown; sessionId?: unknown; test?: unknown; format?: unknown }) {
     if (this.renewing) return;
     this.renewing = true;
     try {
@@ -197,42 +212,52 @@ export class SenderConnection {
       if (this.ws.readyState !== WebSocket.OPEN) return;
       if (!result.ok) {
         if (result.code === 'unauthenticated') {
-          if (this.status === 'pending') {
-            this.send({ type: 'rejected', reason: 'unauthenticated' });
-            this.close(SENDER_CLOSE.UNAUTHENTICATED, 'unauthenticated');
-          }
+          if (this.status === 'pending') this.reject('unauthenticated', SENDER_CLOSE.UNAUTHENTICATED);
           // A failed renewal keeps the grace window running; expiry decides.
           return;
         }
-        this.send({ type: 'rejected', reason: result.code === 'forbidden' ? 'forbidden' : 'admin-not-configured' });
-        this.lostReason = 'auth_expired';
-        this.close(SENDER_CLOSE.FORBIDDEN, result.code === 'forbidden' ? 'forbidden' : 'admin-not-configured');
+        this.reject(result.code === 'forbidden' ? 'forbidden' : 'admin-not-configured', SENDER_CLOSE.FORBIDDEN, 'auth_expired');
         return;
       }
       if (this.status === 'pending') {
         if (this.authTimer) clearTimeout(this.authTimer);
         this.authTimer = null;
-        if (typeof message.sessionId !== 'string' || message.sessionId.length === 0) {
-          this.send({ type: 'rejected', reason: 'missing-session' });
-          this.close(SENDER_CLOSE.NOT_JOINABLE, 'missing-session');
+        const sessionId = typeof message.sessionId === 'string' && message.sessionId.length > 0 ? message.sessionId : null;
+        const hasTest = message.test !== undefined && message.test !== null;
+        if (sessionId && hasTest) {
+          this.reject('ambiguous-target', SENDER_CLOSE.NOT_JOINABLE);
+          return;
+        }
+        if (!sessionId && !hasTest) {
+          this.reject('missing-target', SENDER_CLOSE.NOT_JOINABLE);
           return;
         }
         if (!formatMatches(message.format)) {
-          this.send({ type: 'rejected', reason: 'unsupported-format' });
-          this.close(SENDER_CLOSE.UNSUPPORTED_FORMAT, 'unsupported-format');
+          this.reject('unsupported-format', SENDER_CLOSE.UNSUPPORTED_FORMAT);
           return;
         }
-        const attach = this.opts.manager.attachSender(message.sessionId, this.link);
+        let attach: ReturnType<SessionManager['attachSender']> | ReturnType<SessionManager['attachTest']>;
+        if (sessionId) {
+          attach = this.opts.manager.attachSender(sessionId, this.link);
+          this.target = { sessionId };
+        } else {
+          const parsed = parseTestTarget(message.test);
+          if (!parsed.ok) {
+            this.reject(parsed.reason, SENDER_CLOSE.NOT_JOINABLE);
+            return;
+          }
+          attach = this.opts.manager.attachTest(parsed.target, this.link);
+          this.target = { room: parsed.target.room };
+        }
         if (!attach.ok) {
           this.send({ type: 'rejected', reason: attach.reason, ...(attach.lastHeardAt !== undefined ? { lastHeardAt: attach.lastHeardAt } : {}) });
           this.close(attach.code, attach.reason);
           return;
         }
         this.runtime = attach.runtime;
-        this.sessionId = message.sessionId;
         this.userId = result.userId;
         this.setAuthorized(result.exp);
-        this.log.info('sender ready', { sessionId: this.sessionId, epoch: attach.epoch });
+        this.log.info('sender ready', { ...this.target, epoch: attach.epoch });
         this.send({ type: 'ready', epoch: attach.epoch, expectedPosition: attach.expectedPosition });
         return;
       }
@@ -242,7 +267,7 @@ export class SenderConnection {
         return;
       }
       this.setAuthorized(result.exp);
-      this.log.info('sender renewed', { sessionId: this.sessionId });
+      this.log.info('sender renewed', { ...this.target });
     } finally {
       this.renewing = false;
     }

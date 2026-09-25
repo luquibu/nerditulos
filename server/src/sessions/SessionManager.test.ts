@@ -284,6 +284,104 @@ describe('RuntimeSessionManager stream policy and start', () => {
     expect([b.sessionId, c.sessionId].filter((id) => t.store.sessions.get(id)?.state === 'starting')).toHaveLength(1);
   });
 
+  it('source tests: refused while the room has an unfinished runtime, allowed once it is finished', async () => {
+    const t = await twoRooms();
+    const a = await t.manager.prepare('sala-1', { title: 'A', sourceLanguage: 'es' });
+    await t.manager.start(a.sessionId);
+    const runtime = t.manager.getRuntime(a.sessionId)!;
+    const attempt = () => t.manager.attachTest({ room: 'sala-1', sourceLanguage: 'es' }, link(9));
+    expect(runtime.state).toBe('starting');
+    expect(attempt()).toMatchObject({ ok: false, code: 4409, reason: 'room-busy' });
+    const l = link(1);
+    t.manager.attachSender(a.sessionId, l);
+    await flush();
+    expect(runtime.state).toBe('live');
+    expect(attempt()).toMatchObject({ ok: false, code: 4409, reason: 'room-busy' });
+    runtime.senderLost(l, 'socket_closed');
+    expect(runtime.state).toBe('interrupted');
+    expect(attempt()).toMatchObject({ ok: false, code: 4409, reason: 'room-busy' });
+    void runtime.finish('http');
+    await flush();
+    expect(runtime.state).toBe('finishing');
+    expect(attempt()).toMatchObject({ ok: false, code: 4409, reason: 'room-busy' });
+    t.factory.all[0]!.respond({ tokens: [], finished: true });
+    await runtime.idle();
+    await flush();
+    expect(runtime.state).toBe('finished');
+    expect(attempt()).toMatchObject({ ok: true, epoch: 1, expectedPosition: 0 });
+    expect(t.manager.testForRoom('sala-1')?.state).toBe('opening');
+  });
+
+  it('source tests stay isolated from the other room\'s live session, in both directions', async () => {
+    const t = await twoRooms();
+    const live = await t.manager.prepare('sala-2', { title: 'Live', sourceLanguage: 'en' });
+    await t.manager.start(live.sessionId);
+    const senderLink = link(1);
+    expect(t.manager.attachSender(live.sessionId, senderLink).ok).toBe(true);
+    const testLink = link(2);
+    const attached = t.manager.attachTest({ room: 'sala-1', sourceLanguage: 'es' }, testLink);
+    expect(attached.ok).toBe(true);
+    await flush();
+    const session = t.manager.getRuntime(live.sessionId)!;
+    const test = t.manager.testForRoom('sala-1')!;
+    expect(session.state).toBe('live');
+    expect(test.state).toBe('listening');
+    const [sessionProvider, testProvider] = t.factory.all as [FakeProvider, FakeProvider];
+    expect(sessionProvider.input.clientReferenceId.startsWith(live.sessionId)).toBe(true);
+    expect(testProvider.input.clientReferenceId).toBe('test/sala-1/1');
+    // Frames reach only their own provider.
+    session.onFrame(senderLink, frameOf(0), 1);
+    test.onFrame(testLink, frameOf(0), 1);
+    test.onFrame(testLink, frameOf(1600), 2);
+    expect([sessionProvider.deliveredSamples(), testProvider.deliveredSamples()]).toEqual([1600, 3200]);
+    // Responses reach only their own link; the tested room stays without a session for attendees.
+    const reader = new FakeRes();
+    t.hub.subscribe('sala-1', 'es', null, reader as unknown as ServerResponse);
+    testProvider.respond({ tokens: [{ ...finalToken('prueba '), language: 'es' }, partialToken('x')] });
+    sessionProvider.respond({ tokens: [finalToken('talk '), partialToken('y')] });
+    await session.idle();
+    expect(testLink.sent.filter((m) => m.type === 'preview')).toEqual([{ type: 'preview', final: 'prueba ', partial: 'x' }]);
+    expect(senderLink.sent.filter((m) => m.type === 'preview')).toEqual([]);
+    expect(reader.events().filter((e) => e.event === 'final' || e.event === 'partial')).toEqual([]);
+    expect(t.hub.getPublicRoom('sala-1')?.session).toBeNull();
+    expect(t.hub.getPublicRoom('sala-2')?.session?.state).toBe('live');
+    expect(t.store.chunks.map((c) => c.text)).toEqual(['talk ']);
+    // Ending one does not touch the other.
+    test.onEnd(testLink, 'finish');
+    expect(session.state).toBe('live');
+    expect(t.manager.testForRoom('sala-1')).toBeNull();
+    const reversed = t.manager.attachTest({ room: 'sala-2', sourceLanguage: 'en' }, link(3));
+    expect(reversed).toMatchObject({ ok: false, reason: 'room-busy' });
+    session.senderLost(senderLink, 'socket_closed');
+    expect(session.state).toBe('interrupted');
+    expect(t.manager.attachTest({ room: 'sala-1', sourceLanguage: 'en' }, link(4)).ok).toBe(true);
+    expect(t.manager.testForRoom('sala-1')?.state).toBe('opening');
+  });
+
+  it('start ends the room\'s test; a start that fails leaves it running; dispose terminates tests', async () => {
+    const t = await twoRooms();
+    const testLink = link(1);
+    expect(t.manager.attachTest({ room: 'sala-1', sourceLanguage: 'es' }, testLink).ok).toBe(true);
+    await flush();
+    const a = await t.manager.prepare('sala-1', { title: 'A', sourceLanguage: 'es' });
+    t.store.failures.set('startSession', 1);
+    await expect(t.manager.start(a.sessionId)).rejects.toThrow('fake failure: startSession');
+    expect(t.manager.testForRoom('sala-1')?.state).toBe('listening');
+    expect(testLink.closed).toBeNull();
+    await t.manager.start(a.sessionId);
+    expect(t.manager.testForRoom('sala-1')).toBeNull();
+    expect(testLink.sent[testLink.sent.length - 1]).toEqual({ type: 'test', state: 'ended', reason: 'session_started' });
+    expect(testLink.closed).toEqual({ code: 4410, reason: 'session-started' });
+    expect(t.factory.all[0]!.terminated).toBe(true);
+    const other = link(2);
+    expect(t.manager.attachTest({ room: 'sala-2', sourceLanguage: 'en' }, other).ok).toBe(true);
+    await flush();
+    t.manager.dispose();
+    expect(t.factory.all[t.factory.all.length - 1]!.terminated).toBe(true);
+    expect(other.closed).toBeNull();
+    expect(t.manager.testForRoom('sala-2')).toBeNull();
+  });
+
   it('lists sessions without availableLanguages, from a runtime or from the store alike', async () => {
     const t = await twoRooms();
     const a = await t.manager.prepare('sala-1', { title: 'A', sourceLanguage: 'es' });

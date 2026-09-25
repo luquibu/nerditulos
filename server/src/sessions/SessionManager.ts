@@ -1,10 +1,12 @@
-import { AUDIO_FORMAT, SENDER_CLOSE, type AdminRoom, type OutputType, type SessionRecord, type SourceLanguage } from '@nerditulos/shared';
+import { AUDIO_FORMAT, SENDER_CLOSE, type AdminRoom, type OutputType, type SessionRecord, type SourceLanguage, type SourceTestTarget } from '@nerditulos/shared';
 import type { Logger } from '../log.js';
 import type { StreamHub } from '../public/streamHub.js';
 import type { ProviderFactory } from '../provider/soniox.js';
 import { recoverFinishingSession, translationTargetOf } from './recovery.js';
-import { SessionRuntime, type RuntimeConfig, type SenderLink } from './SessionRuntime.js';
+import type { SenderLink, SenderTarget } from './senderTarget.js';
+import { SessionRuntime, type RuntimeConfig } from './SessionRuntime.js';
 import type { RoomRow, SessionRow, SessionStore } from './SessionStore.js';
+import { SourceTestRuntime } from './SourceTestRuntime.js';
 
 /**
  * Streams a newly prepared session gets, by source language: the original plus one translation.
@@ -50,12 +52,16 @@ export function toRecord(session: SessionRow, roomSlug: string): SessionRecord {
   };
 }
 
+export type AttachResult<T extends SenderTarget> = { ok: true; runtime: T; epoch: number; expectedPosition: number } | { ok: false; code: number; reason: string; lastHeardAt?: number };
+
 export interface SessionManager {
   listAdminRooms(): Promise<AdminRoom[]>;
   prepare(slug: string, input: { title: string; sourceLanguage: SourceLanguage }): Promise<SessionRecord>;
   start(sessionId: string): Promise<SessionRecord>;
   finish(sessionId: string): Promise<SessionRecord>;
-  attachSender(sessionId: string, link: SenderLink): { ok: true; runtime: SessionRuntime; epoch: number; expectedPosition: number } | { ok: false; code: number; reason: string; lastHeardAt?: number };
+  attachSender(sessionId: string, link: SenderLink): AttachResult<SessionRuntime>;
+  /** A source test for a room without an active session; at most one per room. */
+  attachTest(input: SourceTestTarget, link: SenderLink): AttachResult<SourceTestRuntime>;
 }
 
 export interface ManagerDeps {
@@ -70,6 +76,9 @@ export interface ManagerDeps {
 
 export class RuntimeSessionManager implements SessionManager {
   private readonly runtimes = new Map<string, SessionRuntime>();
+  /** Source tests by room slug. */
+  private readonly tests = new Map<string, SourceTestRuntime>();
+  private testCounter = 0;
   private readonly store: SessionStore;
   private readonly rooms: RoomRow[];
   private readonly log: Logger;
@@ -99,6 +108,10 @@ export class RuntimeSessionManager implements SessionManager {
 
   liveRuntimes(): SessionRuntime[] {
     return [...this.runtimes.values()];
+  }
+
+  testForRoom(slug: string): SourceTestRuntime | null {
+    return this.tests.get(slug) ?? null;
   }
 
   /**
@@ -228,6 +241,8 @@ export class RuntimeSessionManager implements SessionManager {
       hubSession: null,
     });
     this.runtimes.set(session.id, runtime);
+    // The room is taken: a source test in it ends before the session's sender can attach.
+    this.tests.get(room.slug)?.end('session_started');
     this.log.info('session starting', { sessionId: session.id, room: room.slug, sourceLanguage: session.sourceLanguage });
     return this.recordOf(runtime);
   }
@@ -247,15 +262,44 @@ export class RuntimeSessionManager implements SessionManager {
     throw new ManagerError(409, 'not_controllable', { state: session.state });
   }
 
-  attachSender(sessionId: string, link: SenderLink) {
+  attachSender(sessionId: string, link: SenderLink): AttachResult<SessionRuntime> {
     const runtime = this.runtimes.get(sessionId);
-    if (!runtime) return { ok: false as const, code: SENDER_CLOSE.NOT_JOINABLE, reason: 'session-not-joinable' };
+    if (!runtime) return { ok: false, code: SENDER_CLOSE.NOT_JOINABLE, reason: 'session-not-joinable' };
     const result = runtime.attachSender(link);
     if (!result.ok) return result;
-    return { ok: true as const, runtime, epoch: result.epoch, expectedPosition: result.expectedPosition };
+    return { ok: true, runtime, epoch: result.epoch, expectedPosition: result.expectedPosition };
+  }
+
+  attachTest(input: SourceTestTarget, link: SenderLink): AttachResult<SourceTestRuntime> {
+    const room = this.roomBySlug(input.room);
+    if (!room) return { ok: false, code: SENDER_CLOSE.NOT_JOINABLE, reason: 'room-not-found' };
+    // A `finish()` from `starting` leaves a finished runtime in the map while its write runs; that room is free.
+    const active = this.runtimeForRoom(room.id);
+    if (active && active.state !== 'finished') return { ok: false, code: SENDER_CLOSE.SENDER_ACTIVE, reason: 'room-busy' };
+    if (this.tests.has(room.slug)) return { ok: false, code: SENDER_CLOSE.SENDER_ACTIVE, reason: 'test-active' };
+    const runtime = new SourceTestRuntime(
+      {
+        providerFactory: this.deps.providerFactory,
+        log: this.log,
+        config: this.deps.config,
+        now: this.deps.now,
+        onEnded: (ended) => {
+          if (this.tests.get(room.slug) === ended) this.tests.delete(room.slug);
+        },
+      },
+      room.slug,
+      input.sourceLanguage,
+      link,
+      ++this.testCounter,
+    );
+    this.tests.set(room.slug, runtime);
+    runtime.open();
+    return { ok: true, runtime, epoch: 1, expectedPosition: 0 };
   }
 
   dispose() {
     for (const runtime of this.runtimes.values()) runtime.dispose();
+    for (const test of this.tests.values()) test.dispose();
+    this.tests.clear();
   }
 }

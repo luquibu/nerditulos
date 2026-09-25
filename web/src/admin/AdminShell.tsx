@@ -1,8 +1,13 @@
 import { useEffect } from 'react';
+import { enUS } from '@clerk/localizations/en-US';
+import { esES } from '@clerk/localizations/es-ES';
 import { ClerkProvider, Show, SignIn, useAuth } from '@clerk/react';
 import type { RuntimeConfig } from '@nerditulos/shared';
+import { useLanguage } from '../LanguageProvider.js';
+import { LanguageSwitch } from '../LanguageSwitch.js';
 import { registerTokenSupplier } from './capture/registry.js';
 import { ConsolePage } from './ConsolePage.js';
+import { consoleStrings, type ConsoleStrings } from './consoleStrings.js';
 
 /** Registers Clerk's `getToken` into the capture runtime's token supplier while mounted. */
 function TokenBridge() {
@@ -11,15 +16,16 @@ function TokenBridge() {
   return null;
 }
 
-function ConsoleFrame({ config, children }: { config: RuntimeConfig; children: React.ReactNode }) {
+function ConsoleFrame({ d, children }: { d: ConsoleStrings; children: React.ReactNode }) {
   return (
     <div className="console">
       <a className="skip-link" href="#main">
-        Ir al contenido
+        {d.skipToContent}
       </a>
       <header className="console__header">
         <img className="console__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
         <span className="console__spacer" />
+        <LanguageSwitch />
       </header>
       <main className="console__main" id="main">
         {children}
@@ -37,25 +43,28 @@ export default function AdminShell({
   showConsole: boolean;
   children: React.ReactNode;
 }) {
+  const [lang] = useLanguage();
+  const d = consoleStrings(lang);
   if (!config.clerkPublishableKey) {
     if (!showConsole) return <>{children}</>;
     return (
-      <ConsoleFrame config={config}>
+      <ConsoleFrame d={d}>
         <div className="banner banner--error" role="alert">
-          Administración no configurada: falta la clave publicable de Clerk en el servidor.
+          {d.adminKeyMissing}
         </div>
       </ConsoleFrame>
     );
   }
+  // English is passed explicitly so that switching back from Spanish reapplies the full resource.
   return (
-    <ClerkProvider publishableKey={config.clerkPublishableKey} afterSignOutUrl="/admin">
+    <ClerkProvider publishableKey={config.clerkPublishableKey} afterSignOutUrl="/admin" localization={lang === 'es' ? esES : enUS}>
       <TokenBridge />
       {showConsole ? (
         <>
           <Show when="signed-out">
-            <ConsoleFrame config={config}>
-              <h1 className="section-title">Consola</h1>
-              <p className="card__meta">Iniciá sesión con la cuenta administradora para preparar y supervisar sesiones.</p>
+            <ConsoleFrame d={d}>
+              <h1 className="section-title">{d.consoleTitle}</h1>
+              <p className="card__meta">{d.signInIntro}</p>
               <div>
                 <SignIn routing="hash" />
               </div>

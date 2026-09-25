@@ -5,7 +5,7 @@ import type { AdminVerifier } from '../auth/token.js';
 import { silentLogger } from '../log.js';
 import { StreamHub } from '../public/streamHub.js';
 import { RuntimeSessionManager } from '../sessions/SessionManager.js';
-import { FakeStore, fakeProviderFactory, flush } from '../test/fakes.js';
+import { endToken, FakeStore, fakeProviderFactory, finalToken, flush, partialToken } from '../test/fakes.js';
 import { SenderConnection, type SenderServerOptions } from './sender.js';
 
 class FakeWs extends EventEmitter {
@@ -45,12 +45,14 @@ const FORMAT = { encoding: 'pcm_s16le', sampleRate: 16000, channels: 1, chunkSam
 async function harness(opts: { adminUserId?: string; exp?: () => number; now?: () => number } = {}) {
   const store = new FakeStore();
   const room = await store.upsertRoom('sala-1', 'Sala 1');
+  const room2 = await store.upsertRoom('sala-2', 'Sala 2');
   const hub = new StreamHub({ publicWindowSegments: 20, log: silentLogger, pingIntervalMs: 1e9 });
   hub.setRoom({ slug: 'sala-1', name: 'Sala 1', index: 1 });
+  hub.setRoom({ slug: 'sala-2', name: 'Sala 2', index: 2 });
   const factory = fakeProviderFactory();
   const manager = new RuntimeSessionManager({
     store,
-    rooms: [room],
+    rooms: [room, room2],
     hub,
     providerFactory: factory,
     log: silentLogger,
@@ -240,5 +242,142 @@ describe('sender socket renewal and expiry', () => {
     expect(gap.detail).toMatchObject({ kind: 'client_gap', fromPosition: 1600, toPosition: 4800, extentSamples: 3200 });
     await vi.advanceTimersByTimeAsync(20000);
     expect(a.ws.closed).toBeNull();
+  });
+});
+
+describe('sender socket source test', () => {
+  const TEST = { room: 'sala-1', sourceLanguage: 'es' };
+
+  async function testing(h: Awaited<ReturnType<typeof harness>>, test: Record<string, unknown> = TEST) {
+    const c = h.connect();
+    c.ws.text({ type: 'auth', token: 'valid', test, format: FORMAT });
+    await flush();
+    return c;
+  }
+
+  it('rejects auth without a target, with both, with a bad test, and with an unknown room', async () => {
+    const h = await harness();
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{}, 'missing-target'],
+      [{ sessionId: h.prepared.sessionId, test: TEST }, 'ambiguous-target'],
+      [{ test: 'sala-1' }, 'invalid-test'],
+      [{ test: { room: '', sourceLanguage: 'es' } }, 'invalid-test'],
+      [{ test: { room: 'sala-1', sourceLanguage: 'fr' } }, 'invalid-language'],
+      [{ test: { room: 'sala-9', sourceLanguage: 'es' } }, 'room-not-found'],
+    ];
+    for (const [extra, reason] of cases) {
+      const c = h.connect();
+      c.ws.text({ type: 'auth', token: 'valid', format: FORMAT, ...extra });
+      await flush();
+      expect(c.ws.messages()[0], reason).toEqual({ type: 'rejected', reason });
+      expect(c.ws.closed, reason).toEqual({ code: 4404, reason });
+    }
+    expect(h.factory.all).toHaveLength(0);
+  });
+
+  it('attaches a test: ready, listening, an original-only provider, and nothing stored or published', async () => {
+    const h = await harness();
+    h.store.calls.length = 0;
+    const c = await testing(h);
+    expect(c.ws.messages()).toEqual([{ type: 'ready', epoch: 1, expectedPosition: 0 }, { type: 'test', state: 'listening' }]);
+    const provider = h.factory.all[0]!;
+    expect(provider.input).toMatchObject({ sourceLanguage: 'es', translationTarget: null });
+    expect(provider.input.clientReferenceId).toMatch(/^test\/sala-1\/\d+$/);
+    expect(h.store.calls.filter((call) => call === 'createSession' || call === 'startSession' || call === 'insertFinals')).toEqual([]);
+    expect(h.hub.getPublicRoom('sala-1')?.session).toBeNull();
+    expect(h.manager.testForRoom('sala-1')).not.toBeNull();
+  });
+
+  it('frames before the provider opens are dropped while acks keep flowing; previews come from the provider', async () => {
+    const h = await harness();
+    h.factory.openBehavior = 'deferred';
+    const c = await testing(h);
+    expect(c.ws.messages()).toEqual([{ type: 'ready', epoch: 1, expectedPosition: 0 }]);
+    c.ws.binary(0, 0);
+    const provider = h.factory.all[0]!;
+    expect(provider.deliveredSamples()).toBe(0);
+    expect(c.ws.messages().filter((m) => m.type === 'ack')).toHaveLength(1);
+    provider.resolveOpen();
+    await flush();
+    expect(c.ws.messages().some((m) => m.type === 'test' && m.state === 'listening')).toBe(true);
+    c.ws.binary(1, 1600);
+    expect(provider.deliveredSamples()).toBe(1600);
+    provider.respond({ tokens: [{ ...finalToken('Hola'), language: 'es' }, partialToken(' mun')] });
+    provider.respond({ tokens: [{ ...finalToken(' mundo'), language: 'es' }, endToken] });
+    expect(c.ws.messages().filter((m) => m.type === 'preview')).toEqual([
+      { type: 'preview', final: 'Hola', partial: ' mun' },
+      { type: 'preview', final: ' mundo', partial: '' },
+    ]);
+    expect(c.ws.sent.join('')).not.toContain('<end>');
+    expect(h.store.chunks).toHaveLength(0);
+  });
+
+  it('end from the client stops the test with 1000 and frees the room; a client close terminates the provider too', async () => {
+    const h = await harness();
+    const c = await testing(h);
+    c.ws.text({ type: 'end', reason: 'file_end' });
+    await flush();
+    expect(c.ws.messages()[c.ws.messages().length - 1]).toEqual({ type: 'test', state: 'ended', reason: 'stopped' });
+    expect(c.ws.closed).toEqual({ code: 1000, reason: 'stopped' });
+    expect(h.factory.all[0]!.terminated).toBe(true);
+    expect(h.manager.testForRoom('sala-1')).toBeNull();
+    const again = await testing(h);
+    expect(again.ws.messages()[0]).toEqual({ type: 'ready', epoch: 1, expectedPosition: 0 });
+    again.ws.close(1001, 'going away');
+    await flush();
+    expect(h.factory.all[1]!.terminated).toBe(true);
+    expect(h.manager.testForRoom('sala-1')).toBeNull();
+  });
+
+  it('rejects a test in a room with an active session and a second test in the same room', async () => {
+    const h = await harness();
+    await h.manager.start(h.prepared.sessionId);
+    const busy = await testing(h);
+    expect(busy.ws.messages()[0]).toEqual({ type: 'rejected', reason: 'room-busy' });
+    expect(busy.ws.closed).toEqual({ code: 4409, reason: 'room-busy' });
+    const first = await testing(h, { room: 'sala-2', sourceLanguage: 'en' });
+    expect(first.ws.messages()[0]).toEqual({ type: 'ready', epoch: 1, expectedPosition: 0 });
+    const second = await testing(h, { room: 'sala-2', sourceLanguage: 'en' });
+    expect(second.ws.messages()[0]).toEqual({ type: 'rejected', reason: 'test-active' });
+    expect(second.ws.closed).toEqual({ code: 4409, reason: 'test-active' });
+    expect(first.ws.closed).toBeNull();
+  });
+
+  it('starting a session in the room ends its test with session_started, and the session sender then attaches', async () => {
+    const h = await harness();
+    const c = await testing(h);
+    await h.manager.start(h.prepared.sessionId);
+    expect(c.ws.messages()[c.ws.messages().length - 1]).toEqual({ type: 'test', state: 'ended', reason: 'session_started' });
+    expect(c.ws.closed).toEqual({ code: 4410, reason: 'session-started' });
+    expect(h.factory.all[0]!.terminated).toBe(true);
+    const s = h.connect();
+    s.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: FORMAT });
+    await flush();
+    expect(s.ws.messages()[0]).toEqual({ type: 'ready', epoch: 1, expectedPosition: 0 });
+    expect(h.manager.getRuntime(h.prepared.sessionId)?.state).toBe('live');
+  });
+
+  it('expiry without renewal closes 4401 and terminates the provider; renewal keeps the test', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const h = await harness({ exp: () => Date.now() + 60000, now: () => Date.now() });
+    const c = h.connect();
+    c.ws.text({ type: 'auth', token: 'valid', test: TEST, format: FORMAT });
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(70010);
+    expect(c.ws.closed?.code).toBe(4401);
+    expect(h.factory.all[0]!.terminated).toBe(true);
+    expect(h.manager.testForRoom('sala-1')).toBeNull();
+    const r = h.connect();
+    r.ws.text({ type: 'auth', token: 'valid', test: TEST, format: FORMAT });
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(40000);
+    expect(r.ws.messages().some((m) => m.type === 'renew')).toBe(true);
+    r.ws.text({ type: 'auth', token: 'valid' });
+    await vi.advanceTimersByTimeAsync(40000);
+    r.ws.binary(0, 0);
+    expect(h.factory.all[1]!.deliveredSamples()).toBe(1600);
+    expect(r.ws.closed).toBeNull();
+    expect(h.manager.testForRoom('sala-1')).not.toBeNull();
   });
 });

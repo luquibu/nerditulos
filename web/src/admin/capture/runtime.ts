@@ -1,11 +1,16 @@
-// Module-scope capture runtime keyed by room. One shared AudioContext; per room a source, a worklet
-// node, a silent gain, and a sender socket. It survives React re-renders, route changes, and
-// StrictMode double mounts. Created on the first user action.
-import { AUDIO_SAMPLE_RATE, SENDER_CLOSE, type DetachReason, type DiscontinuityDetail, type EndReason, type InterruptionCause, type SessionState } from '@nerditulos/shared';
+// Module-scope capture runtime keyed by room. One shared AudioContext; per room a source, a level
+// tap, a silent gain, a monitor gain, and per run (session or source test) a worklet node and a
+// sender socket. It survives React re-renders, route changes, and StrictMode double mounts.
+// Created on the first user action.
+import { AUDIO_SAMPLE_RATE, SENDER_CLOSE, type DetachReason, type DiscontinuityDetail, type EndReason, type InterruptionCause, type SenderServerMessage, type SessionState, type SourceLanguage } from '@nerditulos/shared';
 import processorUrl from './captureProcessor.ts?worker&url';
+import { initialLevel, reduceLevel, signalCheck, type LevelSample, type LevelState } from './level.js';
+import { LevelMonitor } from './levelMonitor.js';
+import { appendPreview, emptyPreview, testEndFromClose, testEndFromConnectError, type PreviewEndReason, type PreviewState } from './preview.js';
 import { getAdminToken, setCaptureActive } from './registry.js';
-import { SenderSocket } from './senderSocket.js';
-import { listMicrophones, mapMediaError, openFile, releaseSource, requestMicrophone, rms, type CaptureSource, type DeviceOption, type SourceKind } from './sources.js';
+import { SenderSocket, type SenderTargetSpec } from './senderSocket.js';
+import type { CaptureNotice } from './notices.js';
+import { listMicrophones, mediaErrorCode, openFile, releaseSource, requestMicrophone, type CaptureSource, type DeviceOption, type SourceKind } from './sources.js';
 import type { CaptureState, CheckState } from './viewModel.js';
 
 export interface CaptureSnapshot {
@@ -13,18 +18,34 @@ export interface CaptureSnapshot {
   sessionId: string | null;
   state: CaptureState;
   sourceKind: SourceKind | null;
+  /** The file name, or the microphone's label as the browser reports it (possibly empty). */
   sourceLabel: string | null;
   devices: DeviceOption[];
   selectedDeviceId: string | null;
   checks: { permission: CheckState; device: CheckState; signal: CheckState; receipt: CheckState };
+  /** Block RMS in [0, 1]. */
   level: number;
+  /** Held block peak in [0, 1]. */
+  peak: number;
+  clipping: boolean;
   noSignal: boolean;
+  /** "Escuchar": the source is routed to the speakers. */
+  monitor: boolean;
+  trackSettings: MediaTrackSettings | null;
+  /** Source test: what the provider recognized, and how the last test ended. Null until the first test. */
+  preview: PreviewState | null;
+  /** A test of the current source reached the provider. */
+  testedSource: boolean;
+  testStartedAt: number | null;
+  testElapsedMs: number;
   epoch: number | null;
   lastAck: { seq: number; samplePosition: number; receivedAt: number } | null;
   framesSent: number;
   framesDropped: number;
-  error: string | null;
-  message: string | null;
+  /** Blocking failure of the source or the connection; the console translates it. */
+  error: CaptureNotice | null;
+  /** Non-blocking notice; the console translates it. */
+  message: CaptureNotice | null;
   sessionState: SessionState | null;
   cause: InterruptionCause | null;
   completeness: 'complete' | 'incomplete' | null;
@@ -34,9 +55,6 @@ export interface CaptureSnapshot {
 }
 
 type Listener = () => void;
-
-const NO_SIGNAL_RMS = 0.004;
-const NO_SIGNAL_MS = 3000;
 
 let sharedContext: AudioContext | null = null;
 let moduleLoaded: Promise<void> | null = null;
@@ -57,21 +75,39 @@ async function ensureContext(): Promise<AudioContext> {
   return ctx;
 }
 
+/** The notice for an `ensureContext` failure, or null when the error came from somewhere else. */
+function audioContextNotice(error: unknown): CaptureNotice | null {
+  if (!(error instanceof Error) || !error.message.startsWith('audio_context')) return null;
+  return { kind: 'audio_context', code: error.message === 'audio_context_sample_rate' ? 'sample_rate' : 'not_running' };
+}
+
+const quantize = (value: number) => Math.round(value * 1000) / 1000;
+
+function setGain(gain: GainNode, value: number, ctx: AudioContext, ramp: boolean) {
+  gain.gain.cancelScheduledValues(ctx.currentTime);
+  if (ramp) gain.gain.setTargetAtTime(value, ctx.currentTime, 0.02);
+  else gain.gain.setValueAtTime(value, ctx.currentTime);
+}
+
 class RoomCapture {
   private snap: CaptureSnapshot;
   private readonly listeners = new Set<Listener>();
   private source: CaptureSource | null = null;
   private worklet: AudioWorkletNode | null = null;
-  private gain: GainNode | null = null;
+  private silentGain: GainNode | null = null;
+  private monitorGain: GainNode | null = null;
+  private levelMonitor: LevelMonitor | null = null;
+  private levelState: LevelState = initialLevel();
+  private liveSince = 0;
+  private wasLive = false;
   private socket: SenderSocket | null = null;
   private seq = 0;
   private dropAfterFlush = false;
   private droppedAfterFlush = 0;
-  private lastSignalAt = 0;
-  private signalTimer: number | null = null;
   private flushWaiters: Array<() => void> = [];
   private connectedToWorklet = false;
   private progressTimer: number | null = null;
+  private testTimer: number | null = null;
 
   constructor(readonly slug: string) {
     this.snap = {
@@ -84,7 +120,15 @@ class RoomCapture {
       selectedDeviceId: null,
       checks: { permission: 'pending', device: 'pending', signal: 'pending', receipt: 'pending' },
       level: 0,
+      peak: 0,
+      clipping: false,
       noSignal: false,
+      monitor: false,
+      trackSettings: null,
+      preview: null,
+      testedSource: false,
+      testStartedAt: null,
+      testElapsedMs: 0,
       epoch: null,
       lastAck: null,
       framesSent: 0,
@@ -145,6 +189,7 @@ class RoomCapture {
   }
 
   async useMicrophone(deviceId?: string) {
+    this.finishTest('source_changed');
     this.set({ state: 'checking', error: null, message: null });
     try {
       const ctx = await ensureContext();
@@ -152,38 +197,41 @@ class RoomCapture {
       const source = await requestMicrophone(ctx, deviceId);
       this.source = source;
       source.track.onended = () => this.onDeviceLost();
-      source.track.onmute = () => this.set({ message: 'Sin señal: el micrófono está silenciado por el sistema.' });
+      source.track.onmute = () => this.set({ message: { kind: 'mic_muted' } });
       source.track.onunmute = () => this.set({ message: null });
-      const label = source.track.label || 'Micrófono';
       this.set({
         sourceKind: 'microphone',
-        sourceLabel: label,
+        sourceLabel: source.track.label || '',
         selectedDeviceId: source.settings.deviceId ?? deviceId ?? null,
         state: 'ready',
         checks: { permission: 'ok', device: 'ok', signal: 'pending', receipt: 'pending' },
+        trackSettings: source.settings,
         file: null,
       });
+      this.attachGraph(ctx);
       debugLog({ kind: 'source', source: 'microphone', settings: source.settings });
       await this.refreshDevices();
     } catch (error) {
-      const mapped = error instanceof Error && error.message.startsWith('audio_context') ? { code: error.message, message: error.message === 'audio_context_sample_rate' ? 'El navegador no permite capturar a 16 kHz.' : 'El contexto de audio no se pudo activar. Hacé clic de nuevo.' } : mapMediaError(error);
+      const notice = audioContextNotice(error) ?? { kind: 'media' as const, code: mediaErrorCode(error) };
+      const code = notice.kind === 'media' ? notice.code : null;
       this.set({
         state: 'error',
-        error: mapped.message,
-        checks: { permission: mapped.code === 'permission_denied' ? 'error' : this.snap.checks.permission === 'ok' ? 'ok' : 'pending', device: mapped.code === 'no_device' || mapped.code === 'device_busy' || mapped.code === 'constraints' ? 'error' : 'pending', signal: 'pending', receipt: 'pending' },
+        error: notice,
+        checks: { permission: code === 'permission_denied' ? 'error' : this.snap.checks.permission === 'ok' ? 'ok' : 'pending', device: code === 'no_device' || code === 'device_busy' || code === 'constraints' ? 'error' : 'pending', signal: 'pending', receipt: 'pending' },
       });
     }
   }
 
   async useFile(file: File) {
+    this.finishTest('source_changed');
     this.set({ state: 'checking', error: null, message: null });
     try {
       const ctx = await ensureContext();
       this.releaseCurrentSource();
       const source = openFile(ctx, file);
       this.source = source;
-      source.element.onended = () => void this.stop('end', 'file_end');
-      source.element.onerror = () => this.set({ state: 'error', error: 'No se pudo decodificar el archivo de audio.' });
+      source.element.onended = () => this.onFileEnded();
+      source.element.onerror = () => this.set({ state: 'error', error: { kind: 'file_decode' } });
       await new Promise<void>((resolve, reject) => {
         source.element.onloadedmetadata = () => resolve();
         source.element.onerror = () => reject(new Error('decode'));
@@ -194,18 +242,200 @@ class RoomCapture {
         sourceLabel: file.name,
         state: 'ready',
         checks: { permission: 'ok', device: 'ok', signal: 'pending', receipt: 'pending' },
+        trackSettings: null,
         file: { currentTime: 0, duration: source.element.duration },
       });
+      this.attachGraph(ctx);
       debugLog({ kind: 'source', source: 'file', name: file.name, size: file.size, duration: source.element.duration });
     } catch (error) {
-      this.set({ state: 'error', error: error instanceof Error && error.message.startsWith('audio_context') ? 'El contexto de audio no se pudo activar.' : 'No se pudo abrir el archivo WAV.' });
+      this.set({ state: 'error', error: audioContextNotice(error) ?? { kind: 'file_open' } });
     }
   }
 
   private releaseCurrentSource() {
+    this.levelMonitor?.detach();
     if (this.source) releaseSource(this.source);
     this.source = null;
-    this.set({ sourceKind: null, sourceLabel: null, file: null });
+    if (this.monitorGain && sharedContext) setGain(this.monitorGain, 0, sharedContext, false);
+    this.levelState = initialLevel();
+    this.wasLive = false;
+    this.set({
+      sourceKind: null,
+      sourceLabel: null,
+      file: null,
+      level: 0,
+      peak: 0,
+      clipping: false,
+      noSignal: false,
+      monitor: false,
+      trackSettings: null,
+      preview: null,
+      testedSource: false,
+      checks: { ...this.snap.checks, signal: 'pending' },
+    });
+  }
+
+  /** Per-source graph, alive until the source is released: level tap and monitor path, both silent by default. */
+  private attachGraph(ctx: AudioContext) {
+    if (!this.source) return;
+    const silent = this.ensureSilentGain(ctx);
+    const monitor = this.ensureMonitorGain(ctx);
+    this.source.node.connect(monitor);
+    if (!this.levelMonitor) this.levelMonitor = new LevelMonitor(ctx, (sample, now) => this.onLevelTick(sample, now));
+    this.levelState = initialLevel();
+    this.wasLive = false;
+    this.levelMonitor.attach(this.source.node, silent);
+  }
+
+  private ensureSilentGain(ctx: AudioContext): GainNode {
+    if (!this.silentGain) {
+      this.silentGain = ctx.createGain();
+      this.silentGain.gain.value = 0;
+      this.silentGain.connect(ctx.destination);
+    }
+    return this.silentGain;
+  }
+
+  private ensureMonitorGain(ctx: AudioContext): GainNode {
+    if (!this.monitorGain) {
+      this.monitorGain = ctx.createGain();
+      this.monitorGain.gain.value = 0;
+      this.monitorGain.connect(ctx.destination);
+    }
+    return this.monitorGain;
+  }
+
+  private sourceLive(): boolean {
+    const source = this.source;
+    if (!source) return false;
+    if (source.kind === 'microphone') return source.track.readyState === 'live' && source.track.enabled;
+    return !source.element.paused && !source.element.ended;
+  }
+
+  private onLevelTick(sample: LevelSample, now: number) {
+    this.levelState = reduceLevel(this.levelState, sample, now);
+    const live = this.sourceLive();
+    if (live && !this.wasLive) this.liveSince = now;
+    this.wasLive = live;
+    const patch: Partial<CaptureSnapshot> = {};
+    const level = quantize(this.levelState.level);
+    const peak = quantize(this.levelState.peak);
+    if (level !== this.snap.level) patch.level = level;
+    if (peak !== this.snap.peak) patch.peak = peak;
+    if (this.levelState.clipping !== this.snap.clipping) patch.clipping = this.levelState.clipping;
+    if (live) {
+      const check = signalCheck(this.levelState, this.liveSince, now);
+      const noSignal = check === 'warning';
+      if (noSignal !== this.snap.noSignal) patch.noSignal = noSignal;
+      if (check !== this.snap.checks.signal) patch.checks = { ...this.snap.checks, signal: check };
+    } else if (this.snap.noSignal) {
+      patch.noSignal = false;
+    }
+    if (Object.keys(patch).length > 0) this.set(patch);
+  }
+
+  /** "Escuchar": route the source to the speakers. Off by default; turned off when a session starts. */
+  async setMonitor(on: boolean) {
+    let ctx: AudioContext;
+    try {
+      ctx = await ensureContext();
+    } catch {
+      this.set({ monitor: false, message: { kind: 'audio_context', code: 'not_running' } });
+      return;
+    }
+    setGain(this.ensureMonitorGain(ctx), on ? 1 : 0, ctx, true);
+    this.set({ monitor: on });
+    debugLog({ kind: 'monitor', on, at: Date.now() });
+  }
+
+  // ---- source test ----
+
+  /** Checks the source against the provider without a session; the server echoes the recognized text. */
+  async startTest(sourceLanguage: SourceLanguage) {
+    if (!this.source || !this.sourceChecked) return;
+    if (this.snap.state !== 'ready' && this.snap.state !== 'ended' && this.snap.state !== 'error') return;
+    this.set({
+      state: 'testing',
+      error: null,
+      message: null,
+      preview: emptyPreview('connecting'),
+      epoch: null,
+      lastAck: null,
+      framesSent: 0,
+      framesDropped: 0,
+      discontinuities: 0,
+      testStartedAt: null,
+      testElapsedMs: 0,
+      checks: { ...this.snap.checks, receipt: 'pending' },
+    });
+    setCaptureActive(this.slug, true);
+    let ctx: AudioContext;
+    try {
+      ctx = await ensureContext();
+      await this.openSocket({ test: { room: this.slug, sourceLanguage } });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'error';
+      debugLog({ kind: 'test_connect_failed', reason, at: Date.now() });
+      this.finishTest(testEndFromConnectError(reason));
+      return;
+    }
+    // The source may have changed while the socket opened; that already ended this test.
+    if (!this.isTesting() || !this.source) return;
+    this.startWorklet(ctx);
+    if (this.source.kind === 'microphone') this.source.track.enabled = true;
+    else {
+      this.source.element.currentTime = 0;
+      await this.source.element.play();
+      this.startProgress();
+    }
+    const startedAt = performance.now();
+    this.set({ testStartedAt: startedAt, testElapsedMs: 0 });
+    this.testTimer = window.setInterval(() => this.set({ testElapsedMs: performance.now() - startedAt }), 1000);
+    debugLog({ kind: 'test_start', sourceLanguage, at: Date.now() });
+  }
+
+  stopTest(reason: Extract<PreviewEndReason, 'stopped' | 'session_started'> = 'stopped') {
+    this.finishTest(reason);
+  }
+
+  private isTesting(): boolean {
+    return this.snap.state === 'testing';
+  }
+
+  /** The only way out of `testing`, idempotent. The socket's own close is ignored once it is dropped here. */
+  private finishTest(reason: PreviewEndReason) {
+    if (this.snap.state !== 'testing') return;
+    const socket = this.socket;
+    this.socket = null;
+    if (this.testTimer !== null) window.clearInterval(this.testTimer);
+    this.testTimer = null;
+    this.teardownGraph();
+    socket?.close();
+    let file = this.snap.file;
+    if (this.source?.kind === 'file') {
+      this.source.element.currentTime = 0;
+      file = { currentTime: 0, duration: this.source.element.duration };
+    }
+    const preview = this.snap.preview ?? emptyPreview();
+    // A rejection (`room-busy`, say) is already explained by the end-of-test line; a muted microphone still is not.
+    const message = this.snap.message?.kind === 'rejected' ? null : this.snap.message;
+    this.set({ state: 'ready', preview: { ...preview, state: 'ended', endedReason: reason }, file, testStartedAt: null, message });
+    setCaptureActive(this.slug, false);
+    debugLog({ kind: 'test_end', reason, at: Date.now() });
+  }
+
+  private onPreview(message: Extract<SenderServerMessage, { type: 'preview' }>) {
+    if (this.snap.state !== 'testing') return;
+    this.set({ preview: appendPreview(this.snap.preview ?? emptyPreview('listening'), message) });
+  }
+
+  private onTest(message: Extract<SenderServerMessage, { type: 'test' }>) {
+    if (this.snap.state !== 'testing') return;
+    if (message.state === 'listening') {
+      this.set({ preview: { ...(this.snap.preview ?? emptyPreview()), state: 'listening' }, testedSource: true });
+      return;
+    }
+    this.finishTest(message.reason);
   }
 
   // ---- session control ----
@@ -213,61 +443,61 @@ class RoomCapture {
   async start(sessionId: string) {
     if (!this.source) throw new Error('no-source');
     if (this.snap.state === 'streaming' || this.snap.state === 'connecting') return;
-    this.set({ sessionId, state: 'connecting', error: null, message: null, epoch: null, lastAck: null, discontinuities: 0, paused: false });
+    this.finishTest('session_started');
+    if (this.snap.monitor) void this.setMonitor(false);
+    this.set({ sessionId, state: 'connecting', error: null, message: null, epoch: null, lastAck: null, discontinuities: 0, paused: false, checks: { ...this.snap.checks, receipt: 'pending' } });
     setCaptureActive(this.slug, true);
     const ctx = await ensureContext();
     try {
-      await this.openSocket(sessionId);
+      await this.openSocket({ sessionId });
     } catch (error) {
-      // The rejected socket's close event must not overwrite the state set here.
-      this.socket = null;
       const reason = error instanceof Error ? error.message : 'error';
       if (reason.includes('generation-draining')) {
-        this.set({ state: 'waiting', message: 'Esperando cierre de la conexión anterior' });
+        this.set({ state: 'waiting', message: { kind: 'waiting_previous' } });
         window.setTimeout(() => void this.start(sessionId), 1500);
         return;
       }
       if (reason.includes('sender-active')) {
-        this.set({ state: 'error', error: 'Otra fuente ya está enviando audio a esta sesión. No se reemplaza la fuente activa.' });
+        this.set({ state: 'error', error: { kind: 'sender_active' } });
         setCaptureActive(this.slug, false);
         return;
       }
-      this.set({ state: 'error', error: `No se pudo conectar el envío de audio (${reason}).` });
+      this.set({ state: 'error', error: { kind: 'connect_failed', reason } });
       setCaptureActive(this.slug, false);
       return;
     }
     // Order: context -> module -> socket ready -> start tracks / play.
-    this.seq = 0;
-    this.dropAfterFlush = false;
-    const worklet = new AudioWorkletNode(ctx, 'nerditulos-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
-    worklet.port.onmessage = (event: MessageEvent) => this.onWorkletMessage(event.data as { type: string; samplePosition?: number; pcm?: Int16Array });
-    const gain = this.gain ?? ctx.createGain();
-    gain.gain.value = 0;
-    this.gain = gain;
-    worklet.connect(gain);
-    gain.connect(ctx.destination);
-    this.worklet = worklet;
-    this.connectSourceToWorklet();
+    this.startWorklet(ctx);
     if (this.source.kind === 'microphone') this.source.track.enabled = true;
     else {
       await this.source.element.play();
       this.startProgress();
     }
-    this.lastSignalAt = performance.now();
-    this.startSignalWatch();
     this.set({ state: 'streaming', paused: false });
   }
 
-  private async openSocket(sessionId: string) {
+  /** A fresh worklet per run, so the chunker starts at position 0 and the server sees no client gap. */
+  private startWorklet(ctx: AudioContext) {
+    this.seq = 0;
+    this.dropAfterFlush = false;
+    this.droppedAfterFlush = 0;
+    const worklet = new AudioWorkletNode(ctx, 'nerditulos-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
+    worklet.port.onmessage = (event: MessageEvent) => this.onWorkletMessage(event.data as { type: string; samplePosition?: number; pcm?: Int16Array });
+    worklet.connect(this.ensureSilentGain(ctx));
+    this.worklet = worklet;
+    this.connectSourceToWorklet();
+  }
+
+  private async openSocket(target: SenderTargetSpec) {
     const url = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/sender`;
     const socket = new SenderSocket({
       url,
-      sessionId,
+      target,
       getToken: (o) => getAdminToken(o),
       debug: debugEnabled() ? (line) => debugLog(line) : undefined,
       events: {
         onReady: (epoch) => this.set({ epoch }),
-        onRejected: (reason) => this.set({ message: `Rechazado: ${reason}` }),
+        onRejected: (reason) => this.set({ message: { kind: 'rejected', reason } }),
         onAck: (ack) => {
           this.set({ lastAck: ack });
           if (this.snap.checks.receipt !== 'ok') this.setCheck('receipt', 'ok');
@@ -278,13 +508,21 @@ class RoomCapture {
           this.set({ discontinuities: this.snap.discontinuities + 1 });
           debugLog({ kind: 'discontinuity', detail });
         },
+        onPreview: (message) => this.onPreview(message),
+        onTest: (message) => this.onTest(message),
         onClose: (code, reason, noRetry) => {
           if (this.socket === socket) this.onSocketClosed(code, reason, noRetry);
         },
       },
     });
     this.socket = socket;
-    await socket.connect();
+    try {
+      await socket.connect();
+    } catch (error) {
+      // The rejected socket's close event must not overwrite the state its caller sets.
+      if (this.socket === socket) this.socket = null;
+      throw error;
+    }
   }
 
   private connectSourceToWorklet() {
@@ -316,32 +554,14 @@ class RoomCapture {
       return;
     }
     const pcm = data.pcm;
-    const level = rms(pcm);
-    if (level >= NO_SIGNAL_RMS) this.lastSignalAt = performance.now();
     const socket = this.socket;
     const seq = this.seq++;
     const sent = socket ? socket.sendFrame(seq, data.samplePosition, pcm) : false;
     const sourceTime = this.source?.kind === 'file' ? this.source.element.currentTime : undefined;
     if (debugEnabled()) debugLog({ kind: 'chunk', seq, samplePosition: data.samplePosition, samples: pcm.length, sent, sourceTime, sentAt: Date.now(), perfNow: performance.now(), buffered: socket?.bufferedAmount ?? 0 });
     if (seq % 5 === 0 || !sent) {
-      this.set({ level, framesSent: socket?.counters.framesSent ?? this.snap.framesSent, framesDropped: (socket?.counters.framesDroppedCongestion ?? 0) + this.droppedAfterFlush });
+      this.set({ framesSent: socket?.counters.framesSent ?? this.snap.framesSent, framesDropped: (socket?.counters.framesDroppedCongestion ?? 0) + this.droppedAfterFlush });
     }
-  }
-
-  private startSignalWatch() {
-    this.stopSignalWatch();
-    this.signalTimer = window.setInterval(() => {
-      if (this.snap.state !== 'streaming') return;
-      const silent = performance.now() - this.lastSignalAt >= NO_SIGNAL_MS;
-      if (silent !== this.snap.noSignal) this.set({ noSignal: silent });
-      const check: CheckState = silent ? 'warning' : 'ok';
-      if (this.snap.checks.signal !== check) this.setCheck('signal', check);
-    }, 500);
-  }
-
-  private stopSignalWatch() {
-    if (this.signalTimer !== null) window.clearInterval(this.signalTimer);
-    this.signalTimer = null;
   }
 
   private startProgress() {
@@ -386,7 +606,6 @@ class RoomCapture {
     if (this.source.kind === 'file') await this.source.element.play();
     else this.source.track.enabled = true;
     this.socket?.sendControl({ type: 'resume' });
-    this.lastSignalAt = performance.now();
     this.set({ state: 'streaming', paused: false });
     debugLog({ kind: 'resume', at: Date.now() });
   }
@@ -401,9 +620,8 @@ class RoomCapture {
 
   /** Stop order: ending -> stop the source -> flush -> reason message. */
   async stop(kind: 'end' | 'detach', reason: EndReason | DetachReason) {
-    if (this.snap.state === 'ending' || this.snap.state === 'ended' || this.snap.state === 'idle' || this.snap.state === 'ready') return;
+    if (this.snap.state === 'ending' || this.snap.state === 'ended' || this.snap.state === 'idle' || this.snap.state === 'ready' || this.snap.state === 'testing') return;
     this.set({ state: 'ending' });
-    this.stopSignalWatch();
     this.stopProgress();
     if (this.source?.kind === 'file') this.source.element.pause();
     else if (this.source?.kind === 'microphone' && kind === 'end') this.source.track.enabled = false;
@@ -419,26 +637,39 @@ class RoomCapture {
     return this.stop('end', 'finish');
   }
 
+  private onFileEnded() {
+    if (this.snap.state === 'testing') this.finishTest('file_end');
+    else void this.stop('end', 'file_end');
+  }
+
   private onDeviceLost() {
-    if (this.snap.state === 'streaming' || this.snap.state === 'paused') {
+    const lost = { checks: { ...this.snap.checks, device: 'error' as const }, error: { kind: 'device_lost' as const } };
+    if (this.snap.state === 'testing') {
+      this.finishTest('device_lost');
+      this.set({ ...lost, state: 'error' });
+    } else if (this.snap.state === 'streaming' || this.snap.state === 'paused') {
       void this.stop('detach', 'device_lost').then(() => {
-        this.set({ checks: { ...this.snap.checks, device: 'error' }, error: 'Se perdió el dispositivo de audio.' });
+        this.set({ checks: { ...this.snap.checks, device: 'error' }, error: lost.error });
       });
     } else {
-      this.set({ checks: { ...this.snap.checks, device: 'error' }, error: 'Se perdió el dispositivo de audio.', state: 'error' });
+      this.set({ ...lost, state: 'error' });
     }
   }
 
   private onSocketClosed(code: number, reason: string, noRetry: boolean) {
     debugLog({ kind: 'socket_close', code, reason, at: Date.now() });
+    if (this.snap.state === 'testing') {
+      this.finishTest(testEndFromClose(code, reason));
+      return;
+    }
     this.teardownGraph();
     if (code === SENDER_CLOSE.NOT_JOINABLE) {
-      this.set({ state: 'ended', message: reason === 'finished' ? null : `Sesión no disponible (${reason}).` });
+      this.set({ state: 'ended', message: reason === 'finished' ? null : { kind: 'session_unavailable', reason } });
       setCaptureActive(this.slug, false);
       return;
     }
     if (noRetry) {
-      this.set({ state: 'error', error: `Conexión cerrada por el servidor (${code} ${reason}). No se reintenta.` });
+      this.set({ state: 'error', error: { kind: 'closed_no_retry', code, reason } });
       setCaptureActive(this.slug, false);
       return;
     }
@@ -447,12 +678,12 @@ class RoomCapture {
       setCaptureActive(this.slug, false);
       return;
     }
-    this.set({ state: 'interrupted', message: `Envío interrumpido (${code} ${reason}).` });
+    this.set({ state: 'interrupted', message: { kind: 'send_interrupted', code, reason } });
     setCaptureActive(this.slug, false);
   }
 
+  /** Ends a run: drops the worklet and socket, leaves the source and its level tap in place. */
   private teardownGraph() {
-    this.stopSignalWatch();
     this.stopProgress();
     this.disconnectSourceFromWorklet();
     if (this.worklet) {
@@ -466,13 +697,15 @@ class RoomCapture {
     this.worklet = null;
     this.socket = null;
     if (this.source?.kind === 'file') this.source.element.pause();
+    // Nothing leaves the browser without a worklet and a socket; the enabled track only feeds the meter.
+    else if (this.source?.kind === 'microphone' && this.source.track.readyState === 'live') this.source.track.enabled = true;
   }
 
   /** Re-auth with the same session id after an interruption: new socket, new epoch, fresh chunker. */
   async reconnect() {
     if (!this.snap.sessionId || !this.source) return;
     if (this.source.kind === 'microphone' && this.source.track.readyState === 'ended') {
-      this.set({ error: 'El micrófono anterior ya no está disponible. Elegí una fuente de nuevo.' });
+      this.set({ error: { kind: 'mic_gone' } });
       return;
     }
     this.teardownGraph();
@@ -480,6 +713,7 @@ class RoomCapture {
   }
 
   reset() {
+    this.finishTest('stopped');
     this.teardownGraph();
     this.set({ state: this.source ? 'ready' : 'idle', sessionId: null, epoch: null, lastAck: null, message: null, error: null, sessionState: null, cause: null, completeness: null, paused: false, checks: { ...this.snap.checks, signal: 'pending', receipt: 'pending' } });
   }

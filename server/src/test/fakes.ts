@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import type { Completeness, InterruptionCause, SessionState, SourceLanguage } from '@nerditulos/shared';
+import type { Completeness, InterruptionCause, SenderServerMessage, SessionState, SourceLanguage } from '@nerditulos/shared';
 import type { ProviderConfigInput, ProviderConnection, ProviderFactory, SonioxResponse } from '../provider/soniox.js';
+import type { SenderLink } from '../sessions/senderTarget.js';
 import type { FinalChunkInsert, FinalChunkRow, RoomRow, SessionEventInsert, SessionRow, SessionStore, StreamRow, StreamSpec } from '../sessions/SessionStore.js';
 
 const ACTIVE_STATES: ReadonlyArray<SessionState> = ['starting', 'live', 'interrupted', 'finishing'];
@@ -308,6 +309,22 @@ export const endToken = { text: '<end>', is_final: true, translation_status: 'no
 
 export function frameOf(samplePosition: number, samples = 1600, seq = 0) {
   return { seq, samplePosition, pcm: new Int16Array(samples) };
+}
+
+/** Sender link that records what a runtime sends and its first close. */
+export function fakeLink(id = 1) {
+  const link = {
+    id,
+    sent: [] as SenderServerMessage[],
+    closed: null as { code: number; reason: string } | null,
+    send(m: SenderServerMessage) {
+      this.sent.push(m);
+    },
+    close(code: number, reason: string) {
+      if (!this.closed) this.closed = { code, reason };
+    },
+  };
+  return link as SenderLink & typeof link;
 }
 
 export async function flush(times = 5) {

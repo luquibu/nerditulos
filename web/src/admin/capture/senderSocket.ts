@@ -1,4 +1,4 @@
-import { AUDIO_FORMAT, encodeFrame, SENDER_CLOSE_NO_RETRY, type DiscontinuityDetail, type SenderClientMessage, type SenderServerMessage } from '@nerditulos/shared';
+import { AUDIO_FORMAT, encodeFrame, SENDER_CLOSE_NO_RETRY, type DiscontinuityDetail, type SenderClientMessage, type SenderServerMessage, type SourceTestTarget } from '@nerditulos/shared';
 
 export interface SenderSocketEvents {
   onReady(epoch: number, expectedPosition: number): void;
@@ -8,7 +8,13 @@ export interface SenderSocketEvents {
   onState(state: Extract<SenderServerMessage, { type: 'state' }>): void;
   onDiscontinuity(detail: DiscontinuityDetail): void;
   onClose(code: number, reason: string, noRetry: boolean): void;
+  /** Source test only. */
+  onPreview?(message: Extract<SenderServerMessage, { type: 'preview' }>): void;
+  onTest?(message: Extract<SenderServerMessage, { type: 'test' }>): void;
 }
+
+/** What the socket attaches to: a started session, or a room's source test. */
+export type SenderTargetSpec = { sessionId: string } | { test: SourceTestTarget };
 
 // Client congestion limit: chunks captured while more than 64000 bytes (2 s) are queued are dropped.
 export const CLIENT_BUFFER_LIMIT = 64000;
@@ -23,7 +29,7 @@ export class SenderSocket {
   readonly counters = { framesSent: 0, framesDroppedCongestion: 0, renewals: 0 };
 
   constructor(
-    private readonly opts: { url: string; sessionId: string; getToken: TokenGetter; events: SenderSocketEvents; debug?: (line: Record<string, unknown>) => void },
+    private readonly opts: { url: string; target: SenderTargetSpec; getToken: TokenGetter; events: SenderSocketEvents; debug?: (line: Record<string, unknown>) => void },
   ) {}
 
   get bufferedAmount(): number {
@@ -42,7 +48,7 @@ export class SenderSocket {
     this.ws = ws;
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => {
-        this.sendControl({ type: 'auth', token, sessionId: this.opts.sessionId, format: AUDIO_FORMAT });
+        this.sendControl({ type: 'auth', token, ...this.opts.target, format: AUDIO_FORMAT });
       };
       ws.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
@@ -93,6 +99,13 @@ export class SenderSocket {
         break;
       case 'discontinuity':
         this.opts.events.onDiscontinuity(message.detail);
+        break;
+      case 'preview':
+        this.opts.events.onPreview?.(message);
+        break;
+      case 'test':
+        this.opts.debug?.({ kind: 'test', ...message, at: Date.now() });
+        this.opts.events.onTest?.(message);
         break;
     }
   }
