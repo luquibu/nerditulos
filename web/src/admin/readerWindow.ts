@@ -17,7 +17,13 @@ export function openReaderWindow(slug: string, href: string): boolean {
   // one. The window must keep its opener (no `noopener`): only then can the next click find it by name.
   const w = window.open('', readerWindowName(slug));
   if (!w) return false;
-  if (w.location.pathname !== readerPath(slug)) w.location.href = href;
+  let atReader = false;
+  try {
+    atReader = w.location.pathname === readerPath(slug);
+  } catch {
+    // The window was taken to another origin, so its location is unreadable: navigate it back.
+  }
+  if (!atReader) w.location.href = href;
   w.focus();
   return true;
 }
