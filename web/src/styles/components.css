@@ -79,6 +79,8 @@ select.field__input option { background: var(--surface); }
 .chip--live { background: var(--status-live); color: #000; font-family: var(--font-display); letter-spacing: 0.04em; text-transform: uppercase; }
 .chip--room { background: transparent; border: 1px solid var(--room, var(--accent-2)); color: var(--text); border-radius: var(--radius-full); }
 .chip--room::before { content: ''; width: 0.5rem; height: 0.5rem; border-radius: var(--radius-full); background: var(--room, var(--accent-2)); }
+.chip--link { text-decoration: none; cursor: pointer; }
+.chip--link:hover { text-decoration: underline; background: var(--fill-active); }
 .chip--lang { background: var(--fill-active); color: var(--text); }
 
 /* Status strip */
@@ -157,11 +159,16 @@ dialog.modal::backdrop { background: var(--scrim); }
 .row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
 .checks { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .checks li { display: flex; gap: var(--space-2); align-items: center; font-size: var(--text-sm); color: var(--text-secondary); min-height: 24px; }
-/* Source-test preview: the attendee's reading surface, so the console sees what a reader would. */
+/* Source-test preview: the attendee's reading surface, so the console sees what a reader would.
+   Fixed at four reading lines; column-reverse pins the scroll origin to the bottom edge, so new text
+   is always in view without script. That only holds while the box has a single child. */
 .check-preview {
   font: var(--text-xl) / var(--reading-leading) var(--font-reading); color: var(--reading-fg); background: var(--reading-bg);
-  max-width: var(--reading-measure); min-height: 3em; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); overflow-wrap: anywhere;
+  max-width: var(--reading-measure); height: calc(4 * var(--text-xl) * var(--reading-leading) + 2 * var(--space-3));
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); overflow-wrap: anywhere;
+  display: flex; flex-direction: column-reverse; overflow-y: auto; scrollbar-gutter: stable;
 }
+.check-preview__text { flex: 0 0 auto; min-height: 100%; }
 .check-preview__partial { opacity: 0.7; }
 .check-preview__empty { color: var(--text-muted); font: var(--text-sm) var(--font-ui); }
 .meter { height: 6px; background: var(--surface); border-radius: var(--radius-full); overflow: hidden; }
@@ -183,16 +190,18 @@ dialog.modal::backdrop { background: var(--scrim); }
 .session-list { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
 .session-list__item { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--bg-card); font-size: var(--text-sm); }
 .session-list__title { font-weight: 600; }
-/* Finished sessions fold under a native disclosure. Open, the list shows --session-rows cards
-   (one-line titles, ~5rem each) and scrolls past that. */
+/* Capped lists show --session-rows cards (one-line titles, ~5rem each) and scroll past that: 5 for
+   current sessions, 3 for finished ones, which fold under a native disclosure. A row with a start
+   warning is taller, so the last visible card may be cut and is reached by scrolling. */
+.session-list--capped {
+  max-height: calc(var(--session-rows) * 5rem + (var(--session-rows) - 1) * var(--space-3));
+  overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable;
+}
+.session-list--current { --session-rows: 5; }
 .session-history__summary { cursor: pointer; padding: var(--space-2) 0; font-size: var(--text-sm); font-weight: 500; color: var(--text-secondary); }
 .session-history__summary:hover { color: var(--text); }
 .session-history[open] > .session-history__summary { margin-bottom: var(--space-3); }
-.session-history__list {
-  --session-rows: 3;
-  max-height: calc(var(--session-rows) * 5rem + (var(--session-rows) - 1) * var(--space-3));
-  overflow-y: auto; overscroll-behavior: contain;
-}
+.session-history__list { --session-rows: 3; }
 .fields-grid { display: grid; gap: var(--space-4); grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 640px) { .fields-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 .section-title { font: 700 var(--text-2xl) / 1.1 var(--font-display); }

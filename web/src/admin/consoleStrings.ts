@@ -62,6 +62,7 @@ export interface ConsoleStrings extends Strings {
   headphonesWarning: string;
   speakNow: string;
   testToSee: string;
+  readerOpensInWindow: string;
   pause: string;
   resume: string;
   position: string;
@@ -177,6 +178,7 @@ export const CONSOLE_ONLY: Record<Language, ConsoleOnlyStrings> = {
     headphonesWarning: 'Usá auriculares: con parlantes, el micrófono capta su propia salida.',
     speakNow: 'Hablá ahora para ver el texto reconocido.',
     testToSee: 'Probá la fuente para ver el texto reconocido.',
+    readerOpensInWindow: 'abre el lector en otra ventana',
     pause: 'Pausar',
     resume: 'Reanudar',
     position: 'Posición (s)',
@@ -304,6 +306,7 @@ export const CONSOLE_ONLY: Record<Language, ConsoleOnlyStrings> = {
     headphonesWarning: 'Use headphones: with speakers, the microphone picks up its own output.',
     speakNow: 'Speak now to see the recognized text.',
     testToSee: 'Test the source to see the recognized text.',
+    readerOpensInWindow: 'opens the reader in another window',
     pause: 'Pause',
     resume: 'Resume',
     position: 'Position (s)',

@@ -4,6 +4,7 @@ import type { AdminRoom, RuntimeConfig, SessionRecord, SourceLanguage } from '@n
 import { ApiError, adminApi } from '../api.js';
 import { LANGUAGE_NATIVE_NAMES, stateLabel } from '../i18n.js';
 import { IconFileAudio, IconMic, IconTriangleAlert, IconUser, StatusIcon } from '../icons.js';
+import { hrefWithLang, langFromSearch } from '../language.js';
 import { useLanguage } from '../LanguageProvider.js';
 import { LanguageSwitch } from '../LanguageSwitch.js';
 import { formatDbfs, meterFraction, NO_SIGNAL_RMS, toDbfs } from './capture/level.js';
@@ -12,6 +13,7 @@ import { testEndMessage } from './capture/preview.js';
 import { getCapture, type CaptureSnapshot } from './capture/runtime.js';
 import { checkLabel, consoleView, formatElapsed, formatTrackProcessing, startWarningText, testLanguageFor } from './capture/viewModel.js';
 import { consoleStrings, type ConsoleStrings } from './consoleStrings.js';
+import { openReaderWindow, readerPath, readerWindowName } from './readerWindow.js';
 
 type Gate =
   | { kind: 'checking' }
@@ -244,6 +246,13 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
   const cancelRef = useRef<HTMLButtonElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const roomVar = { ['--room' as string]: `var(--room-${((room.index - 1) % 8) + 1})` } as React.CSSProperties;
+  const readerHref = hrefWithLang(readerPath(room.slug), langFromSearch(window.location.search));
+  const openReader = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    // Modifier clicks keep the browser's own behaviour (new tab, new window).
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (openReaderWindow(room.slug, readerHref)) event.preventDefault();
+    // Blocked: the anchor's named target still opens or reuses the window, with a full load.
+  };
 
   const active = activeSession(room);
   // The socket's state messages are fresher than polling, but only while that socket is open and
@@ -388,9 +397,10 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
           <h2 className="card__title" id={`room-${room.slug}`}>
             {room.name}
           </h2>
-          <span className="chip chip--room" style={roomVar}>
+          <a className="chip chip--room chip--link" style={roomVar} href={readerHref} target={readerWindowName(room.slug)} onClick={openReader}>
             /r/{room.slug}
-          </span>
+            <span className="visually-hidden">, {d.readerOpensInWindow}</span>
+          </a>
           {view.status === 'live' ? <span className="chip chip--live">{view.chipText}</span> : <span className={`chip chip--status-${view.status}`}><StatusIcon status={view.status} />{view.chipText}</span>}
         </div>
         <div className="console__columns">
@@ -503,14 +513,16 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
                   </p>
                 )}
                 <div className="check-preview" aria-live="off" lang={testLanguageFor(room.sessions)}>
-                  {snap.preview && (snap.preview.text || snap.preview.partial) ? (
-                    <>
-                      {snap.preview.text}
-                      {snap.preview.partial && <span className="check-preview__partial">{snap.preview.partial}</span>}
-                    </>
-                  ) : (
-                    <span className="check-preview__empty">{snap.state === 'testing' ? d.speakNow : d.testToSee}</span>
-                  )}
+                  <div className="check-preview__text">
+                    {snap.preview && (snap.preview.text || snap.preview.partial) ? (
+                      <>
+                        {snap.preview.text}
+                        {snap.preview.partial && <span className="check-preview__partial">{snap.preview.partial}</span>}
+                      </>
+                    ) : (
+                      <span className="check-preview__empty">{snap.state === 'testing' ? d.speakNow : d.testToSee}</span>
+                    )}
+                  </div>
                 </div>
                 {snap.state !== 'testing' && testEnd && (
                   <p className={`test-stage__end test-stage__end--${testEnd.tone}`} role="status">
@@ -600,14 +612,14 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
                 </button>
               </div>
             </form>
-            <ul className="session-list" aria-label={d.sessionsOf(room.name)}>
+            <ul className="session-list session-list--capped session-list--current" aria-label={d.sessionsOf(room.name)} tabIndex={0}>
               {currentSessions.length === 0 && <li className="card__meta">{d.noPrepared}</li>}
               {currentSessions.map(renderSession)}
             </ul>
             {finishedSessions.length > 0 && (
               <details className="session-history">
                 <summary className="session-history__summary">{d.finishedSessions(finishedSessions.length)}</summary>
-                <ul className="session-list session-history__list" aria-label={d.finishedSessionsOf(room.name)} tabIndex={0}>
+                <ul className="session-list session-list--capped session-history__list" aria-label={d.finishedSessionsOf(room.name)} tabIndex={0}>
                   {finishedSessions.map(renderSession)}
                 </ul>
               </details>
