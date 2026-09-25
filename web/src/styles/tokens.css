@@ -1,0 +1,237 @@
+/* Base design tokens: neutrals, surfaces, type scale, spacing, radii, theme, state, and reading defaults. */
+:root {
+  /* Neutrals and surfaces */
+  --bg: #000000;
+  --bg-alt: #0a0a0a;
+  --bg-card: #111111;
+  --surface: #1a1a1a;
+  --text: #ffffff;
+  --text-secondary: #b0b0b0;
+  --text-muted: #929292;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.18);
+  --line-hover: rgba(255, 255, 255, 0.45);
+  --fill-soft: rgba(255, 255, 255, 0.05);
+  --fill-hover: rgba(255, 255, 255, 0.1);
+  --fill-active: rgba(255, 255, 255, 0.14);
+  --scrim: rgba(0, 0, 0, 0.72);
+
+  /* Type scale and spacing */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Radii, shadows, transitions, z-index */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 9999px;
+  --shadow-dropdown: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-card-hover: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --shadow-dialog: 0 20px 25px rgba(0, 0, 0, 0.25);
+  --ring-focus: 0 0 0 3px var(--accent-3-soft);
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-dialog: 300;
+  --z-toast: 400;
+  --z-skip-link: 500;
+
+  /* Theme tokens, defaults without a theme */
+  --brand-name: 'Subtítulos';
+  --accent-1: #7c9cff;
+  --accent-2: #ffd166;
+  --accent-3: #4dd4c4;
+  --accent-1-fill: var(--accent-1);
+  --accent-1-fg: #000;
+  --accent-1-hover: color-mix(in srgb, var(--accent-1) 85%, #000);
+  --accent-1-soft: color-mix(in srgb, var(--accent-1) 15%, transparent);
+  --accent-2-soft: color-mix(in srgb, var(--accent-2) 15%, transparent);
+  --accent-3-soft: color-mix(in srgb, var(--accent-3) 30%, transparent);
+
+  /* State tokens */
+  --status-live: #ff2a44;
+  --status-recording: #ff7a1a;
+  --status-ok: #2ed47a;
+  --status-warning: #ffc93c;
+  --status-error: #ff6b6b;
+  --status-off: #8a8a8a;
+  --status-live-soft: color-mix(in srgb, var(--status-live) 15%, transparent);
+  --status-ok-soft: color-mix(in srgb, var(--status-ok) 15%, transparent);
+  --status-warning-soft: color-mix(in srgb, var(--status-warning) 15%, transparent);
+  --status-error-soft: color-mix(in srgb, var(--status-error) 15%, transparent);
+  --status-off-soft: color-mix(in srgb, var(--status-off) 15%, transparent);
+
+  /* Categorical room palette */
+  --room-1: #4c8dff;
+  --room-2: #ff6b8a;
+  --room-3: #2ecda7;
+  --room-4: #b48cff;
+  --room-5: #ffa23c;
+  --room-6: #7ed957;
+  --room-7: #f45bd1;
+  --room-8: #5fd3f0;
+
+  /* Typography */
+  --font-display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+
+  /* Reading defaults */
+  --reading-scale: 1;
+  --reading-fg: #f2f2f2;
+  --reading-bg: #0a0a0a;
+  --reading-leading: 1.45;
+  --reading-measure: 42ch;
+  --reading-tracking: 0;
+  --font-reading: 'Atkinson Hyperlegible', var(--font-ui);
+
+  /* Focus */
+  --focus-ring: var(--accent-3);
+
+  /* Status strip height, set from script while a room is live */
+  --status-bar-height: 0px;
+}
+
+html[data-size='large'] { --reading-scale: 1.25; }
+html[data-size='xlarge'] { --reading-scale: 1.5; }
+html[data-preset='balanced'] {
+  --reading-fg: #f2f2f2; --reading-bg: #0a0a0a; --reading-leading: 1.45; --reading-measure: 42ch; --reading-tracking: 0;
+}
+html[data-font='system'] { --font-reading: var(--font-ui); }
+html[data-font='atkinson'] { --font-reading: 'Atkinson Hyperlegible', var(--font-ui); }
+
+/* Nerdearla theme: name, logos, and three accents */
+html[data-theme='nerdearla'] {
+  --brand-name: 'Nerdearla';
+  --brand-logo-dark: url('/brand/nerdearla-simplified.svg');
+  --brand-logo-light: url('/brand/nerdearla-simplified-bw.svg');
+  --accent-1: #ff323c;
+  --accent-1-fill: #e02832;
+  --accent-1-fg: #ffffff;
+  --accent-1-hover: #c81e27;
+  --accent-1-soft: rgba(255, 50, 60, 0.15);
+  --accent-2: #ffba00;
+  --accent-2-soft: rgba(255, 186, 0, 0.15);
+  --accent-3: #00aca8;
+  --accent-3-soft: rgba(0, 172, 168, 0.3);
+}
+
+/* Fonts, self-hosted (OFL-1.1; see /fonts/*.txt and NOTICE) */
+@font-face {
+  font-family: 'Barlow Condensed';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/barlow-condensed-latin-600-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Barlow Condensed';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/barlow-condensed-latin-700-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Barlow Condensed';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/barlow-condensed-latin-ext-600-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Barlow Condensed';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/barlow-condensed-latin-ext-700-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Atkinson Hyperlegible';
+  font-style: normal;
+  font-weight: 400;
+  font-display: optional;
+  src: url('/fonts/atkinson-hyperlegible-latin-400-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Atkinson Hyperlegible';
+  font-style: normal;
+  font-weight: 700;
+  font-display: optional;
+  src: url('/fonts/atkinson-hyperlegible-latin-700-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Atkinson Hyperlegible';
+  font-style: normal;
+  font-weight: 400;
+  font-display: optional;
+  src: url('/fonts/atkinson-hyperlegible-latin-ext-400-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Atkinson Hyperlegible';
+  font-style: normal;
+  font-weight: 700;
+  font-display: optional;
+  src: url('/fonts/atkinson-hyperlegible-latin-ext-700-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Reset and base */
+*, *::before, *::after { box-sizing: border-box; }
+html { color-scheme: dark; scroll-padding-top: calc(56px + var(--status-bar-height)); -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: var(--text-base) / 1.5 var(--font-ui); min-height: 100vh; }
+h1, h2, h3 { margin: 0; }
+p { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+a { color: var(--accent-1); }
+img { max-width: 100%; }
+
+/* Focus: a single style for the whole app; nothing turns the outline off */
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.skip-link {
+  position: absolute; top: -100%; left: var(--space-4); z-index: var(--z-skip-link);
+  padding: var(--space-2) var(--space-4); background: var(--accent-1-fill); color: var(--accent-1-fg); border-radius: var(--radius-md);
+}
+.skip-link:focus-visible { top: var(--space-4); }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* Movement */
+@keyframes pulse-dot {
+  0% { opacity: 1; box-shadow: 0 0 0 0 var(--status-live); }
+  70% { opacity: 0.7; box-shadow: 0 0 0 8px transparent; }
+  100% { opacity: 1; box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  html { scroll-behavior: auto; }
+}

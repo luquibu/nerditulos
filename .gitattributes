@@ -1,0 +1,3 @@
+# Third-party files compared byte for byte against their sources; keep LF on every platform.
+web/public/brand/*.svg text eol=lf
+web/public/licenses/*.txt text eol=lf

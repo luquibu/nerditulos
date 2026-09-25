@@ -15,5 +15,40 @@ services:
       retries: 10
       start_period: 10s
 
+  app:
+    build: .
+    image: nerditulos-app:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    # Explicit map: only these variables reach the container (no env_file).
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN in .env}
+      EVENT_NAME: ${EVENT_NAME:-}
+      SONIOX_MODEL: ${SONIOX_MODEL:-stt-rt-v5}
+      DRAIN_TIMEOUT_MS: ${DRAIN_TIMEOUT_MS:-15000}
+      PUBLIC_WINDOW_SEGMENTS: ${PUBLIC_WINDOW_SEGMENTS:-20}
+      SEGMENT_MAX_CHARS: ${SEGMENT_MAX_CHARS:-400}
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      SONIOX_API_KEY: ${SONIOX_API_KEY:-}
+      ADMIN_USER_ID: ${ADMIN_USER_ID:-}
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/rooms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 volumes:
   postgres-data:

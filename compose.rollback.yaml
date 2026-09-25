@@ -1,0 +1,7 @@
+# Rollback overlay: runs the previously built image instead of rebuilding.
+# Usage: docker compose -f compose.yaml -f compose.rollback.yaml up -d app
+# Tag the current image before each build: docker tag nerditulos-app:latest nerditulos-app:previous
+services:
+  app:
+    image: nerditulos-app:previous
+    build: !reset null

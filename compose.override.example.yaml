@@ -1,0 +1,7 @@
+# Local development: publish PostgreSQL on the host loopback so a server run outside Docker can
+# reach it. Copy this file to compose.override.yaml (ignored by Git); Docker Compose merges it
+# automatically with compose.yaml. Do not use it on an installation that serves attendees.
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"

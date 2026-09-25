@@ -145,3 +145,10 @@ vite.config.ts.timestamp-*
 # Local installation details and diagnostic evidence.
 /docs/infraestructura.local.md
 /.local/
+/.claude/settings.local.json
+
+# Local Compose override (copied from compose.override.example.yaml).
+/compose.override.yaml
+
+# Fonts copied from their fontsource packages at build time (web/scripts/copy-fonts.mjs).
+/web/public/fonts/

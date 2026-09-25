@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Server: attach",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "address": "127.0.0.1",
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/server/dist/**/*.js", "${workspaceFolder}/shared/dist/**/*.js"],
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Server: launch",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/server/dist/main.js",
+      "cwd": "${workspaceFolder}",
+      "runtimeArgs": ["--env-file-if-exists=.env.local", "--enable-source-maps"],
+      "outFiles": ["${workspaceFolder}/server/dist/**/*.js", "${workspaceFolder}/shared/dist/**/*.js"],
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Web: Chrome",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/web"
+    }
+  ]
+}

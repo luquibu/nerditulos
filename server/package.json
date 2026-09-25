@@ -1,0 +1,26 @@
+{
+  "name": "@nerditulos/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-migrations.mjs",
+    "watch": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@clerk/backend": "3.20.1",
+    "@nerditulos/shared": "0.1.0",
+    "express": "5.2.1",
+    "pg": "8.23.0",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "24.10.1",
+    "@types/pg": "8.23.1",
+    "@types/ws": "8.18.1"
+  }
+}

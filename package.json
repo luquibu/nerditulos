@@ -1,0 +1,29 @@
+{
+  "name": "nerditulos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "build": "npm run build -w shared && npm run build -w server && npm run build -w web",
+    "dev": "concurrently -k -n shared,server,node,web \"npm:watch:shared\" \"npm:watch:server\" \"npm:dev:server\" \"npm:dev:web\"",
+    "watch:shared": "npm run watch -w shared",
+    "watch:server": "npm run watch -w server",
+    "dev:server": "node --watch --inspect --env-file-if-exists=.env.local --enable-source-maps server/dist/main.js",
+    "dev:web": "npm run dev -w web",
+    "test": "vitest run",
+    "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w web"
+  },
+  "devDependencies": {
+    "concurrently": "10.0.5",
+    "typescript": "5.9.3",
+    "vitest": "5.0.2"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

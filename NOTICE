@@ -1,0 +1,41 @@
+NOTICE
+
+This repository is licensed under MIT (see LICENSE). The third-party material
+listed here keeps its own terms and is not covered by that license.
+
+Nerdearla logos
+---------------
+
+  web/public/brand/nerdearla-simplified.svg       Simplified logo, color
+  web/public/brand/nerdearla-simplified-bw.svg    Simplified logo, black and white
+
+Obtained from https://nerdear.live/logos, a folder Nerdearla's organizers
+gave this project access to, and used as distributed, without recoloring,
+cropping, or any other modification. The Nerdearla name and logos are the
+property of their respective owners; all rights reserved. These files are
+not covered by the MIT license of this repository and must be replaced for
+any other deployment (see README).
+
+Fonts
+-----
+
+Barlow Condensed (Copyright 2017 The Barlow Project Authors,
+https://github.com/jpt/barlow) and Atkinson Hyperlegible (Copyright 2020
+Braille Institute of America, Inc.) are distributed under the SIL Open Font
+License 1.1. The font files come from their @fontsource packages; each
+license text is served next to the fonts as /fonts/OFL-barlow-condensed.txt
+and /fonts/OFL-atkinson-hyperlegible.txt.
+
+Icons
+-----
+
+Eleven icons are copied as inline SVG from Lucide 1.48.0
+(https://github.com/lucide-icons/lucide/tree/1.48.0/icons) into
+web/src/icons.tsx and web/src/styles/components.css: arrow-down, check,
+chevron-down, circle-off, circle-x, file-headphone, mic, radio, refresh-cw,
+triangle-alert and user.
+
+Lucide is distributed under the ISC License, Copyright (c) 2026 Lucide Icons
+and Contributors. Its LICENSE file, which also carries the Feather MIT notice
+(Copyright (c) 2013-present Cole Bemis) for some of these icons, is
+reproduced unchanged in web/public/licenses/LICENSE-lucide.txt.
