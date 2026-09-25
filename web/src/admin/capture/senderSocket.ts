@@ -1,7 +1,8 @@
 import { AUDIO_FORMAT, encodeFrame, SENDER_CLOSE_NO_RETRY, type DiscontinuityDetail, type SenderClientMessage, type SenderServerMessage, type SourceTestTarget } from '@nerditulos/shared';
 
 export interface SenderSocketEvents {
-  onReady(epoch: number, expectedPosition: number): void;
+  /** `testId` comes with a source test's `ready`. */
+  onReady(epoch: number, expectedPosition: number, testId?: string): void;
   onRejected(reason: string, lastHeardAt?: number): void;
   onAck(ack: { seq: number; samplePosition: number; receivedAt: number }): void;
   onFinishing(): void;
@@ -21,16 +22,28 @@ export const CLIENT_BUFFER_LIMIT = 64000;
 
 export type TokenGetter = (options?: { skipCache?: boolean }) => Promise<string | null>;
 
-/** One sender connection instance (epoch). Renews its token when the server asks. */
+/** Constructor of the underlying WebSocket, injectable for tests. */
+export type WebSocketFactory = (url: string) => WebSocket;
+
+export interface SenderSocketOptions {
+  url: string;
+  target: SenderTargetSpec;
+  /** `clerk`: fetch a token and send it in `auth`; `demo`: no token, no renewal. */
+  auth: { mode: 'clerk' | 'demo' };
+  getToken: TokenGetter;
+  events: SenderSocketEvents;
+  debug?: (line: Record<string, unknown>) => void;
+  createWebSocket?: WebSocketFactory;
+}
+
+/** One sender connection instance (epoch). With Clerk it renews its token when the server asks. */
 export class SenderSocket {
   private ws: WebSocket | null = null;
   private ready = false;
   private closed = false;
   readonly counters = { framesSent: 0, framesDroppedCongestion: 0, renewals: 0 };
 
-  constructor(
-    private readonly opts: { url: string; target: SenderTargetSpec; getToken: TokenGetter; events: SenderSocketEvents; debug?: (line: Record<string, unknown>) => void },
-  ) {}
+  constructor(private readonly opts: SenderSocketOptions) {}
 
   get bufferedAmount(): number {
     return this.ws?.bufferedAmount ?? 0;
@@ -41,14 +54,19 @@ export class SenderSocket {
   }
 
   async connect(): Promise<void> {
-    const token = await this.opts.getToken({ skipCache: true });
-    if (!token) throw new Error('no-token');
-    const ws = new WebSocket(this.opts.url);
+    let token: string | null = null;
+    if (this.opts.auth.mode === 'clerk') {
+      token = await this.opts.getToken({ skipCache: true });
+      if (!token) throw new Error('no-token');
+    }
+    // Closed while the token was being fetched (source changed, finish): nothing to open.
+    if (this.closed) throw new Error('closed:0:client-close');
+    const ws = (this.opts.createWebSocket ?? ((url) => new WebSocket(url)))(this.opts.url);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => {
-        this.sendControl({ type: 'auth', token, ...this.opts.target, format: AUDIO_FORMAT });
+        this.sendControl({ type: 'auth', ...(token ? { token } : {}), ...this.opts.target, format: AUDIO_FORMAT });
       };
       ws.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
@@ -77,7 +95,7 @@ export class SenderSocket {
     switch (message.type) {
       case 'ready':
         this.ready = true;
-        this.opts.events.onReady(message.epoch, message.expectedPosition);
+        this.opts.events.onReady(message.epoch, message.expectedPosition, message.testId);
         resolve();
         break;
       case 'rejected':
@@ -85,11 +103,11 @@ export class SenderSocket {
         reject(new Error(`rejected:${message.reason}`));
         break;
       case 'ack':
-        this.opts.debug?.({ kind: 'ack', ...message, at: Date.now(), perfNow: performance.now() });
+        this.opts.debug?.({ kind: 'ack', ...message, at: Date.now() });
         this.opts.events.onAck(message);
         break;
       case 'renew':
-        void this.renew();
+        if (this.opts.auth.mode === 'clerk') void this.renew();
         break;
       case 'finishing':
         this.opts.events.onFinishing();

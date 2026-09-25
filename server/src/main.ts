@@ -92,7 +92,7 @@ async function main() {
   });
 
   app.use('/api', publicRoutes({ config, hub }));
-  app.use('/api/admin', adminRoutes({ requireAdmin: requireAdmin(verifyAdmin), manager }));
+  app.use('/api/admin', adminRoutes({ requireAdmin: requireAdmin(verifyAdmin, { demoMode: config.demoMode, allowedOrigins: config.allowedOrigins }), manager, log }));
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'not_found' });
   });
@@ -100,6 +100,17 @@ async function main() {
   const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');
   const indexHtml = path.join(webDist, 'index.html');
   if (!existsSync(indexHtml)) log.warn('web/dist not found; only the API is served', { webDist });
+  if (config.demoMode) {
+    // Without identity, an embedded console could be driven from a foreign page: refuse framing on
+    // every HTML response, the static index and the SPA fallback alike.
+    app.use((req, res, next) => {
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const file = req.path.split('/').pop() ?? '';
+        if (!file.includes('.') || file.endsWith('.html')) res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+      }
+      next();
+    });
+  }
   app.use(express.static(webDist, { index: false, maxAge: '1h', etag: true }));
   app.get('/{*splat}', (req, res) => {
     if (req.path.startsWith('/ws/')) {
@@ -113,7 +124,7 @@ async function main() {
   const server = createServer(app);
   server.keepAliveTimeout = 65000;
   server.headersTimeout = 70000;
-  const wss = attachSenderServer(server, { allowedOrigins: config.allowedOrigins, verifyAdmin, manager, log });
+  const wss = attachSenderServer(server, { allowedOrigins: config.allowedOrigins, verifyAdmin, demoMode: config.demoMode, manager, log });
 
   await new Promise<void>((resolve) => server.listen(config.port, '0.0.0.0', resolve));
   log.info('listening', {
@@ -122,6 +133,7 @@ async function main() {
     rooms: rooms.map((r) => r.slug),
     adminConfigured: config.adminUserId.length > 0,
     providerConfigured: config.sonioxApiKey.length > 0,
+    demoMode: config.demoMode,
   });
 
   let shuttingDown = false;

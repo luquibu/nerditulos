@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { consoleStrings } from '../consoleStrings.js';
-import { consoleView, formatElapsed, formatTrackProcessing, testLanguageFor, type CaptureState } from './viewModel.js';
+import { consoleView, formatElapsed, formatTrackProcessing, type CaptureState } from './viewModel.js';
 
 const es = consoleStrings('es');
 const en = consoleStrings('en');
@@ -99,17 +99,6 @@ describe('consoleView', () => {
 });
 
 describe('console helpers', () => {
-  it('picks the test language from the most recently prepared session, or Spanish', () => {
-    expect(testLanguageFor([])).toBe('es');
-    expect(testLanguageFor([{ state: 'finished', sourceLanguage: 'en', createdAt: '2026-09-25T10:00:00.000Z' }])).toBe('es');
-    expect(
-      testLanguageFor([
-        { state: 'prepared', sourceLanguage: 'en', createdAt: '2026-09-25T10:00:00.000Z' },
-        { state: 'prepared', sourceLanguage: 'es', createdAt: '2026-09-25T09:00:00.000Z' },
-        { state: 'live', sourceLanguage: 'es', createdAt: '2026-09-25T11:00:00.000Z' },
-      ]),
-    ).toBe('en');
-  });
 
   it('formats the track processing and the elapsed time', () => {
     expect(formatTrackProcessing(es, { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000, channelCount: 1 })).toBe('Eco: cancelado · Ruido: suprimido · Ganancia: automática · 48 kHz · mono');

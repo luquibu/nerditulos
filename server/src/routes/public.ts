@@ -11,10 +11,14 @@ export function publicRoutes(deps: { config: AppConfig; hub: StreamHub }): Route
     const body: RuntimeConfig = {
       clerkPublishableKey: config.clerkPublishableKey,
       eventName: config.eventName,
+      appOrigin: config.appOrigin,
       adminConfigured: config.adminUserId.length > 0,
+      demoMode: config.demoMode,
       publicWindowSegments: config.publicWindowSegments,
       drainTimeoutMs: config.drainTimeoutMs,
     };
+    // A mode switch must reach a tab on its next reload, never a cached copy.
+    res.setHeader('Cache-Control', 'no-store');
     res.json(body);
   });
 

@@ -4,6 +4,7 @@ import type { RuntimeConfig } from '@nerditulos/shared';
 import './styles/tokens.css';
 import './styles/components.css';
 import { App } from './App.js';
+import { setAuthMode } from './admin/capture/registry.js';
 import { fetchConfig } from './api.js';
 import { strings } from './i18n.js';
 import { browserLanguages, browserStorage, readStoredLanguage, resolveLanguage } from './language.js';
@@ -19,6 +20,8 @@ const d = strings(lang);
 fetchConfig()
   .then((config: RuntimeConfig) => {
     document.title = config.eventName ? `${config.eventName} · ${d.appTitle}` : d.appTitle;
+    // Decided once, before any capture: how the audio uplink authenticates.
+    setAuthMode(config.demoMode ? 'demo' : 'clerk');
     root.render(
       <StrictMode>
         <LanguageProvider initial={lang}>

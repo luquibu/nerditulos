@@ -20,6 +20,8 @@ export interface AppConfig {
   clerkSecretKey: string;
   sonioxApiKey: string;
   adminUserId: string;
+  /** DEMO_MODE=true: administration without identity (see the README, "Demo mode"). */
+  demoMode: boolean;
   pg: PgConfig;
 }
 
@@ -50,6 +52,13 @@ function integer(env: Env, name: string, fallback: number, min: number): number 
   const value = Number(raw);
   if (value < min) throw new ConfigError(`${name} must be at least ${min}`);
   return value;
+}
+
+function flag(env: Env, name: string): boolean {
+  const raw = clean(env[name]).toLowerCase();
+  if (raw === '' || raw === 'false') return false;
+  if (raw === 'true') return true;
+  throw new ConfigError(`${name} must be true or false`);
 }
 
 function origin(value: string, name: string): string {
@@ -96,6 +105,7 @@ export function loadConfig(env: Env): AppConfig {
     clerkSecretKey: clean(env.CLERK_SECRET_KEY),
     sonioxApiKey: clean(env.SONIOX_API_KEY),
     adminUserId: clean(env.ADMIN_USER_ID),
+    demoMode: flag(env, 'DEMO_MODE'),
     pg,
   };
 }

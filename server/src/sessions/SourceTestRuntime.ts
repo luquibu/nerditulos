@@ -1,5 +1,6 @@
 // A source test: one sender link, one provider connection, and the recognized original text echoed
 // back as previews. No store, no hub, no reconnection; the room's public view never sees it.
+import { randomUUID } from 'node:crypto';
 import { SENDER_CLOSE, type AudioFrame, type DetachReason, type EndReason, type SourceLanguage, type SourceTestEndReason } from '@nerditulos/shared';
 import type { Logger } from '../log.js';
 import type { ProviderConnection, ProviderFactory, SonioxResponse } from '../provider/soniox.js';
@@ -28,6 +29,10 @@ const CLOSE_REASON: Record<SourceTestEndReason, string> = {
 };
 
 export class SourceTestRuntime implements SenderTarget {
+  /** Public identity of the test: consoles confirm a start over it by this id, never by position or room. */
+  readonly id = randomUUID();
+  /** Clock value at construction, on the runtime's own clock. */
+  readonly startedAt: number;
   state: SourceTestState = 'opening';
   endReason: SourceTestEndReason | null = null;
   private sender: SenderLink | null;
@@ -58,6 +63,7 @@ export class SourceTestRuntime implements SenderTarget {
   ) {
     this.sender = link;
     this.now = deps.now ?? (() => Date.now());
+    this.startedAt = this.now();
     this.log = deps.log.child({ room: roomSlug, test: number });
     this.tokenState = new TokenState({ segmentMaxChars: deps.config.segmentMaxChars, outputs: ['original'] });
   }

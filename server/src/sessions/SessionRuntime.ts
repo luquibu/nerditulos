@@ -369,7 +369,8 @@ export class SessionRuntime implements SenderTarget {
         gen.state = 'active';
         this.providerFailureSince = null;
         this.reconnectAttempt = 0;
-        this.tokenState.openNewSegment();
+        // Through the chain, so the new segment opens after every response of the previous generation still queued.
+        this.enqueue('other', async () => this.tokenState.openNewSegment());
         this.startKeepalive();
         // Frames that arrived while no generation was active (reconnecting, or this one opening) are known drops.
         const dropped = this.droppedWhileNoGeneration;
@@ -461,7 +462,7 @@ export class SessionRuntime implements SenderTarget {
       const authError = response.error_code === 401 || response.error_code === 403;
       gen.state = 'closed';
       gen.connection?.terminate();
-      if (authError && (this.state === 'live' || this.state === 'starting')) {
+      if (authError && (this.state === 'live' || this.state === 'starting' || (this.state === 'interrupted' && this.sender))) {
         this.transition('interrupted', 'provider_error');
         this.detachSenderLink(SENDER_CLOSE.DETACHED, 'provider-error');
       } else {
@@ -493,6 +494,9 @@ export class SessionRuntime implements SenderTarget {
       this.handleProviderFailure(gen, `close ${code}`);
     } else if (this.state === 'finishing') {
       this.onGenerationFinished(gen);
+    } else if (this.state === 'interrupted') {
+      // A resume attempt whose provider went away: release the sender instead of holding it.
+      this.handleProviderFailure(gen, `close ${code}`);
     }
   }
 
@@ -514,6 +518,15 @@ export class SessionRuntime implements SenderTarget {
 
   private handleProviderFailure(gen: Generation, why: string) {
     if (this.generation !== gen) return;
+    if (this.state === 'interrupted') {
+      // Only a resume attempt has a sender here; it must not stay attached to a session with no provider.
+      if (!this.sender) return;
+      this.log.warn('provider failed during resume; releasing the sender', { why, generation: gen.number });
+      this.recordEvent('provider_error', { reason: 'resume_failed', why, generation: gen.number });
+      this.transition('interrupted', 'provider_unavailable');
+      this.detachSenderLink(SENDER_CLOSE.DETACHED, 'provider-unavailable');
+      return;
+    }
     if (this.state !== 'live' && this.state !== 'starting') return;
     const now = this.now();
     if (this.providerFailureSince === null) this.providerFailureSince = now;
@@ -598,8 +611,21 @@ export class SessionRuntime implements SenderTarget {
       }
       this.stopTimers();
       this.detachSenderLink(SENDER_CLOSE.NOT_JOINABLE, 'finished');
-      await this.withRetry('finish-starting', () => this.deps.store.markFinished(this.id, null, []));
-      this.deps.onFinished?.(this);
+      const write = () => this.deps.store.markFinished(this.id, null, []);
+      try {
+        await this.withRetry('finish-starting', write);
+        this.deps.onFinished?.(this);
+      } catch (error) {
+        // Finished in memory: the room stays occupied (the row is still `starting`) until the write lands.
+        this.log.error('finish write failed from starting; retrying until it lands', { error: (error as Error).message });
+        this.storage = 'failing';
+        void this.withRetry('finish-starting', write, Infinity)
+          .then(() => {
+            this.storage = 'ok';
+            this.deps.onFinished?.(this);
+          })
+          .catch(() => undefined);
+      }
       return { state: this.state, completeness: this.completeness };
     }
     // live | interrupted
@@ -828,7 +854,8 @@ export class SessionRuntime implements SenderTarget {
 
   private storageFailed(where: string) {
     this.storage = 'failing';
-    if (this.state === 'live' || this.state === 'starting' || this.state === 'finishing') {
+    // An attached sender in `interrupted` is a resume attempt: it is released like a live one.
+    if (this.state === 'live' || this.state === 'starting' || this.state === 'finishing' || (this.state === 'interrupted' && this.sender)) {
       this.log.error('storage unavailable', { where, state: this.state });
       const gen = this.generation;
       if (gen && gen.state !== 'closed') {

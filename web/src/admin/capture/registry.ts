@@ -28,6 +28,20 @@ export function subscribeCaptureActive(listener: Listener): () => void {
   };
 }
 
+// How the sender socket authenticates: with a Clerk token, or with nothing at all in demo mode.
+// Set once from the runtime configuration before the first capture.
+export type AuthMode = 'clerk' | 'demo';
+
+let authMode: AuthMode = 'clerk';
+
+export function setAuthMode(mode: AuthMode) {
+  authMode = mode;
+}
+
+export function getAuthMode(): AuthMode {
+  return authMode;
+}
+
 // Token supplier registered by the TokenBridge component inside ClerkProvider.
 export type TokenSupplier = (options?: { skipCache?: boolean }) => Promise<string | null>;
 

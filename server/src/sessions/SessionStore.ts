@@ -57,6 +57,8 @@ export interface FinalChunkRow extends FinalChunkInsert {
   persistedAt: Date;
 }
 
+export type DeleteSessionResult = 'deleted' | 'missing' | 'not_prepared' | 'has_data';
+
 export interface SessionEventInsert {
   sessionId: string;
   seq: number;
@@ -81,9 +83,18 @@ export interface SessionStore {
     streams: StreamRow[];
   }>;
   getSession(id: string): Promise<SessionRow | null>;
-  /** The room's most recent sessions, newest first. */
-  listSessions(roomId: number, limit: number): Promise<SessionRow[]>;
+  /**
+   * The room's sessions the console needs, newest first: every one that is not finished, the
+   * visible one whatever its state, and the `finishedLimit` most recent finished ones.
+   */
+  listRoomSessions(roomId: number, visibleSessionId: string | null, finishedLimit: number): Promise<SessionRow[]>;
   listUnfinishedSessions(): Promise<SessionRow[]>;
+  /**
+   * Removes a session that is still `prepared`, with its streams, in one transaction that locks the
+   * row first. `has_data` when anything still references it (text, events, or a room's visible
+   * pointer); nothing is deleted then. `missing` is not an error: a repeated delete is idempotent.
+   */
+  deleteSession(id: string): Promise<DeleteSessionResult>;
   loadStreams(sessionId: string): Promise<StreamRow[]>;
 
   /** Conditional `prepared -> starting`; null when the row was not in `prepared`. */
@@ -175,7 +186,10 @@ function toChunk(r: Record<string, unknown>): FinalChunkRow {
 const SESSION_COLUMNS =
   'id, room_id, title, source_language, state, cause, started_at, finishing_at, ended_at, effective_config, completeness, provider_generation, created_at';
 
-async function withTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+/** Thrown inside a transaction to roll it back and report `has_data` (a foreign key refused the delete). */
+class ReferencedError extends Error {}
+
+export async function withTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -235,12 +249,37 @@ export class PgSessionStore implements SessionStore {
     return result.rows[0] ? toSession(result.rows[0]) : null;
   }
 
-  async listSessions(roomId: number, limit: number): Promise<SessionRow[]> {
+  async listRoomSessions(roomId: number, visibleSessionId: string | null, finishedLimit: number): Promise<SessionRow[]> {
     const result = await this.pool.query(
-      `SELECT ${SESSION_COLUMNS} FROM event_sessions WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2`,
-      [roomId, limit],
+      `SELECT * FROM (
+         SELECT ${SESSION_COLUMNS} FROM event_sessions WHERE room_id = $1 AND (state <> 'finished' OR id = $2::uuid)
+         UNION
+         (SELECT ${SESSION_COLUMNS} FROM event_sessions WHERE room_id = $1 AND state = 'finished' ORDER BY created_at DESC LIMIT $3)
+       ) AS s ORDER BY created_at DESC, id`,
+      [roomId, visibleSessionId, finishedLimit],
     );
     return result.rows.map(toSession);
+  }
+
+  async deleteSession(id: string): Promise<DeleteSessionResult> {
+    try {
+      return await withTransaction(this.pool, async (client) => {
+        const row = await client.query('SELECT state FROM event_sessions WHERE id = $1 FOR UPDATE', [id]);
+        if (row.rowCount === 0) return 'missing' as const;
+        if (row.rows[0].state !== 'prepared') return 'not_prepared' as const;
+        try {
+          await client.query('DELETE FROM text_streams WHERE session_id = $1', [id]);
+          await client.query('DELETE FROM event_sessions WHERE id = $1', [id]);
+        } catch (error) {
+          if ((error as { code?: string }).code === '23503') throw new ReferencedError();
+          throw error;
+        }
+        return 'deleted' as const;
+      });
+    } catch (error) {
+      if (error instanceof ReferencedError) return 'has_data';
+      throw error;
+    }
   }
 
   async listUnfinishedSessions(): Promise<SessionRow[]> {

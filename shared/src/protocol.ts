@@ -64,7 +64,14 @@ export interface PublicRoom {
 export interface RuntimeConfig {
   clerkPublishableKey: string;
   eventName: string;
+  /** The installation's public origin (APP_ORIGIN): the only origin from which administration is accepted. */
+  appOrigin: string;
   adminConfigured: boolean;
+  /**
+   * Demo mode: the console and the audio uplink accept any browser without identity. Effective
+   * server setting; served with `Cache-Control: no-store` so a mode switch reaches open tabs on reload.
+   */
+  demoMode: boolean;
   /** Segments per stream in the public reading window; readers keep no more than this. */
   publicWindowSegments: number;
   /** Pending-output allowance when a session finishes, shown in the finish dialog. */
@@ -137,8 +144,11 @@ export interface SourceTestTarget {
 export type SourceTestEndReason = 'stopped' | 'provider_error' | 'provider_closed' | 'time_limit' | 'session_started';
 
 export type SenderClientMessage =
-  /** `sessionId` and `test` are exclusive: a session sender or a source test, never both. */
-  | { type: 'auth'; token: string; sessionId?: string; test?: SourceTestTarget; format?: AudioFormat }
+  /**
+   * `sessionId` and `test` are exclusive: a session sender or a source test, never both. `token`
+   * is the Clerk session token; in demo mode it is omitted and the server ignores it.
+   */
+  | { type: 'auth'; token?: string; sessionId?: string; test?: SourceTestTarget; format?: AudioFormat }
   | { type: 'pause' }
   | { type: 'resume' }
   | { type: 'end'; reason: EndReason }
@@ -161,7 +171,8 @@ export interface DiscontinuityDetail {
 }
 
 export type SenderServerMessage =
-  | { type: 'ready'; epoch: number; expectedPosition: number }
+  /** `testId` identifies a source test; the console sends it back to confirm a start over its own test. */
+  | { type: 'ready'; epoch: number; expectedPosition: number; testId?: string }
   | { type: 'rejected'; reason: string; lastHeardAt?: number }
   | { type: 'ack'; seq: number; samplePosition: number; receivedAt: number }
   | { type: 'renew' }
@@ -207,15 +218,54 @@ export const SENDER_CLOSE_NO_RETRY: ReadonlySet<number> = new Set<number>([
 
 // ---- Admin HTTP ----
 
+/**
+ * Error codes of the admin API, as `{ error, ...detail }` bodies:
+ * - 400 `invalid_id`: the session id is not a UUID. `invalid_title`, `invalid_language`: bad prepare input.
+ * - 403 `origin_not_allowed`: a mutation without an acceptable `Origin` header (see the README, "Demo mode").
+ * - 404 `session_not_found`, `room_not_found`.
+ * - 409 `not_prepared {state}`: start of a session that is no longer prepared (deleted: 404).
+ * - 409 `room_busy {blockingSessionId?, blockingTitle?, blockingState?}`: another session occupies the room.
+ * - 409 `test_active {testId, testSourceLanguage}`: a source test runs in the room and the start did not
+ *   confirm it; resend with `confirmedTestId` to end that test and start.
+ * - 409 `not_deletable {state}`: delete of a session that is not prepared.
+ * - 409 `session_has_data`: delete of a session that already has text or events.
+ * - 409 `not_started`, `not_controllable {state}`: finish of a session in a state that cannot finish.
+ * - 503 `shutting_down`: the server is stopping. `storage_unavailable`: the database did not answer.
+ */
+
 /** Administrative view of a session. Offered languages are a public-stream concern and are not listed here. */
 export interface SessionRecord extends Omit<SessionSummary, 'availableLanguages'> {
   roomSlug: string;
   createdAt: string;
   startedAt: string | null;
   endedAt: string | null;
+  /** A browser is attached as the session's audio sender right now (false for sessions without a runtime). */
+  senderActive: boolean;
+}
+
+/** A source test running in a room; any console may end it by confirming a start with its id. */
+export interface AdminSourceTest {
+  id: string;
+  sourceLanguage: SourceLanguage;
+  startedAt: string;
 }
 
 export interface AdminRoom extends RoomSummary {
   visibleSessionId: string | null;
+  /** Every session that is not finished, the visible session, and the most recent finished ones. */
   sessions: SessionRecord[];
+  test: AdminSourceTest | null;
+}
+
+/** Body of `POST /api/admin/sessions/:id/start`. */
+export interface StartSessionRequest {
+  /** Id of the room's source test the caller agrees to end; without it a running test yields 409 `test_active`. */
+  confirmedTestId?: string;
+}
+
+/** Body of `POST /api/admin/sessions/:id/finish`. */
+export interface FinishSessionResponse {
+  session: SessionRecord;
+  /** The session had already finished before this request. */
+  alreadyFinished: boolean;
 }

@@ -49,6 +49,14 @@ export function RoomsPage({ config }: { config: RuntimeConfig }) {
         <div className="listener__brand">
           <img className="listener__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
           <LanguageSwitch />
+          {config.demoMode && (
+            <>
+              <span className="chip chip--status-warning">{d.demoChip}</span>
+              <a className="chip chip--link chip--status-off" href={hrefWithLang('/admin', explicitLang)} onClick={onLinkClick}>
+                {d.adminLink}
+              </a>
+            </>
+          )}
         </div>
         <h1 className="listener__title">{config.eventName ? d.roomsTitleFor(config.eventName) : d.roomsTitle}</h1>
         <p className="card__meta">{d.roomsIntro}</p>

@@ -1,4 +1,4 @@
-import type { InterruptionCause, SessionRecord, SessionState, SourceLanguage } from '@nerditulos/shared';
+import type { InterruptionCause, SessionState } from '@nerditulos/shared';
 import type { ConsoleStrings } from '../consoleStrings.js';
 
 export type CaptureState = 'idle' | 'checking' | 'ready' | 'testing' | 'connecting' | 'waiting' | 'streaming' | 'paused' | 'ending' | 'ended' | 'interrupted' | 'error';
@@ -129,16 +129,6 @@ export function formatTrackProcessing(d: ConsoleStrings, settings: Partial<Media
   if (typeof settings.sampleRate === 'number') parts.push(`${settings.sampleRate % 1000 === 0 ? settings.sampleRate / 1000 : (settings.sampleRate / 1000).toFixed(1)} kHz`);
   if (typeof settings.channelCount === 'number') parts.push(settings.channelCount === 1 ? d.mono : settings.channelCount === 2 ? d.stereo : d.channels(settings.channelCount));
   return parts.length > 0 ? parts.join(' · ') : d.noBrowserData;
-}
-
-/** Language of a room's source test: its most recently prepared session, or Spanish. */
-export function testLanguageFor(sessions: ReadonlyArray<Pick<SessionRecord, 'state' | 'sourceLanguage' | 'createdAt'>>): SourceLanguage {
-  let latest: (typeof sessions)[number] | null = null;
-  for (const s of sessions) {
-    if (s.state !== 'prepared') continue;
-    if (!latest || s.createdAt > latest.createdAt) latest = s;
-  }
-  return latest?.sourceLanguage ?? 'es';
 }
 
 export function formatElapsed(ms: number): string {

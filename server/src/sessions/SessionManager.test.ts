@@ -63,8 +63,8 @@ describe('RuntimeSessionManager with two rooms', () => {
     const t = await twoRooms();
     const es = await t.manager.prepare('sala-1', { title: 'ES talk', sourceLanguage: 'es' });
     const en = await t.manager.prepare('sala-2', { title: 'EN talk', sourceLanguage: 'en' });
-    await t.manager.start(es.sessionId);
-    await t.manager.start(en.sessionId);
+    await t.manager.start(es.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
+    await t.manager.start(en.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
     const l1 = link(1);
     const l2 = link(2);
     expect(t.manager.attachSender(es.sessionId, l1).ok).toBe(true);
@@ -150,29 +150,29 @@ describe('RuntimeSessionManager with two rooms', () => {
     const t = await twoRooms();
     const a = await t.manager.prepare('sala-1', { title: 'A', sourceLanguage: 'es' });
     const b = await t.manager.prepare('sala-1', { title: 'B', sourceLanguage: 'es' });
-    await t.manager.start(a.sessionId);
-    await expect(t.manager.start(b.sessionId)).rejects.toMatchObject({ status: 409, code: 'room_busy', detail: { blockingSessionId: a.sessionId } });
-    await expect(t.manager.start(a.sessionId)).rejects.toMatchObject({ status: 409, code: 'not_prepared' });
+    await t.manager.start(a.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
+    await expect(t.manager.start(b.sessionId, { confirmedTestId: null }, { confirmedTestId: null })).rejects.toMatchObject({ status: 409, code: 'room_busy', detail: { blockingSessionId: a.sessionId } });
+    await expect(t.manager.start(a.sessionId, { confirmedTestId: null }, { confirmedTestId: null })).rejects.toMatchObject({ status: 409, code: 'not_prepared' });
     await expect(t.manager.finish(b.sessionId)).rejects.toBeInstanceOf(ManagerError);
     const finished = await t.manager.finish(a.sessionId);
-    expect(finished.state).toBe('finished');
+    expect(finished).toMatchObject({ session: { state: 'finished' }, alreadyFinished: false });
     const again = await t.manager.finish(a.sessionId);
-    expect(again.state).toBe('finished');
+    expect(again).toMatchObject({ session: { state: 'finished' }, alreadyFinished: true });
     const other = await t.manager.prepare('sala-2', { title: 'C', sourceLanguage: 'en' });
-    await expect(t.manager.start(other.sessionId)).resolves.toMatchObject({ state: 'starting' });
+    await expect(t.manager.start(other.sessionId, { confirmedTestId: null }, { confirmedTestId: null })).resolves.toMatchObject({ state: 'starting' });
   });
 
   it('boot recovery marks starting/live sessions interrupted with restart events and recovers finishing ones', async () => {
     const t = await twoRooms();
     const live = await t.manager.prepare('sala-1', { title: 'L', sourceLanguage: 'es' });
-    await t.manager.start(live.sessionId);
+    await t.manager.start(live.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
     const l = link(1);
     t.manager.attachSender(live.sessionId, l);
     await flush();
     t.factory.all[0]!.respond({ tokens: [{ ...finalToken('hola'), language: 'es' }] });
     await t.manager.getRuntime(live.sessionId)!.idle();
     const fin = await t.manager.prepare('sala-2', { title: 'F', sourceLanguage: 'es' });
-    await t.manager.start(fin.sessionId);
+    await t.manager.start(fin.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
     await t.store.markFinishing(fin.sessionId);
     // Simulate a restart: a fresh manager over the same store.
     const hub2 = new StreamHub({ publicWindowSegments: 20, log: silentLogger, pingIntervalMs: 1e9 });
@@ -199,8 +199,8 @@ describe('RuntimeSessionManager with two rooms', () => {
     const fresh = await t.manager.prepare('sala-1', { title: 'Fresh ES', sourceLanguage: 'es' });
     // A Spanish session prepared before English translation existed: one stream, inserted as the older code did.
     const { session: legacy } = await t.store.createSession({ roomId: t.rooms[1]!.id, title: 'Legacy ES', sourceLanguage: 'es', streams: [{ outputType: 'original', language: 'es' }] });
-    await t.manager.start(fresh.sessionId);
-    await t.manager.start(legacy.id);
+    await t.manager.start(fresh.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
+    await t.manager.start(legacy.id, { confirmedTestId: null }, { confirmedTestId: null });
     expect(t.manager.attachSender(fresh.sessionId, link(1)).ok).toBe(true);
     expect(t.manager.attachSender(legacy.id, link(2)).ok).toBe(true);
     await flush();
@@ -240,7 +240,7 @@ describe('RuntimeSessionManager stream policy and start', () => {
     const t = await twoRooms();
     const check = async (sessionId: string, expected: 'es' | 'en' | null, linkId: number) => {
       t.store.calls.length = 0;
-      await t.manager.start(sessionId);
+      await t.manager.start(sessionId, { confirmedTestId: null }, { confirmedTestId: null });
       const calls = t.store.calls;
       expect(calls.filter((c) => c === 'loadStreams')).toHaveLength(1);
       expect(calls.indexOf('loadStreams')).toBeLessThan(calls.indexOf('startSession'));
@@ -260,7 +260,7 @@ describe('RuntimeSessionManager stream policy and start', () => {
     const failing = await t.manager.prepare('sala-1', { title: 'F', sourceLanguage: 'es' });
     t.store.failures.set('loadStreams', 1);
     t.store.calls.length = 0;
-    await expect(t.manager.start(failing.sessionId)).rejects.toThrow('fake failure: loadStreams');
+    await expect(t.manager.start(failing.sessionId, { confirmedTestId: null }, { confirmedTestId: null })).rejects.toThrow('fake failure: loadStreams');
     expect(t.store.sessions.get(failing.sessionId)?.state).toBe('prepared');
     expect(t.manager.getRuntime(failing.sessionId)).toBeNull();
     expect(t.store.calls).not.toContain('startSession');
@@ -270,13 +270,13 @@ describe('RuntimeSessionManager stream policy and start', () => {
     const t = await twoRooms();
     t.store.latency = (op) => (op === 'findBlockingSession' ? 5 : 0);
     const a = await t.manager.prepare('sala-1', { title: 'A', sourceLanguage: 'es' });
-    const twice = await Promise.allSettled([t.manager.start(a.sessionId), t.manager.start(a.sessionId)]);
+    const twice = await Promise.allSettled([t.manager.start(a.sessionId, { confirmedTestId: null }, { confirmedTestId: null }), t.manager.start(a.sessionId, { confirmedTestId: null }, { confirmedTestId: null })]);
     expect(twice.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect((twice.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined)?.reason).toMatchObject({ status: 409, code: 'not_prepared' });
     expect(t.manager.liveRuntimes().map((r) => r.id)).toEqual([a.sessionId]);
     const b = await t.manager.prepare('sala-2', { title: 'B', sourceLanguage: 'en' });
     const c = await t.manager.prepare('sala-2', { title: 'C', sourceLanguage: 'es' });
-    const race = await Promise.allSettled([t.manager.start(b.sessionId), t.manager.start(c.sessionId)]);
+    const race = await Promise.allSettled([t.manager.start(b.sessionId, { confirmedTestId: null }, { confirmedTestId: null }), t.manager.start(c.sessionId, { confirmedTestId: null }, { confirmedTestId: null })]);
     const rejected = race.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
     expect(rejected).toHaveLength(1);
     expect(rejected[0]?.reason).toMatchObject({ status: 409, code: 'room_busy' });
@@ -287,7 +287,7 @@ describe('RuntimeSessionManager stream policy and start', () => {
   it('source tests: refused while the room has an unfinished runtime, allowed once it is finished', async () => {
     const t = await twoRooms();
     const a = await t.manager.prepare('sala-1', { title: 'A', sourceLanguage: 'es' });
-    await t.manager.start(a.sessionId);
+    await t.manager.start(a.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
     const runtime = t.manager.getRuntime(a.sessionId)!;
     const attempt = () => t.manager.attachTest({ room: 'sala-1', sourceLanguage: 'es' }, link(9));
     expect(runtime.state).toBe('starting');
@@ -315,7 +315,7 @@ describe('RuntimeSessionManager stream policy and start', () => {
   it('source tests stay isolated from the other room\'s live session, in both directions', async () => {
     const t = await twoRooms();
     const live = await t.manager.prepare('sala-2', { title: 'Live', sourceLanguage: 'en' });
-    await t.manager.start(live.sessionId);
+    await t.manager.start(live.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
     const senderLink = link(1);
     expect(t.manager.attachSender(live.sessionId, senderLink).ok).toBe(true);
     const testLink = link(2);
@@ -358,17 +358,21 @@ describe('RuntimeSessionManager stream policy and start', () => {
     expect(t.manager.testForRoom('sala-1')?.state).toBe('opening');
   });
 
-  it('start ends the room\'s test; a start that fails leaves it running; dispose terminates tests', async () => {
+  it('a confirmed start ends the room\'s test; a start that fails leaves it running; dispose terminates tests', async () => {
     const t = await twoRooms();
     const testLink = link(1);
     expect(t.manager.attachTest({ room: 'sala-1', sourceLanguage: 'es' }, testLink).ok).toBe(true);
     await flush();
+    const testId = t.manager.testForRoom('sala-1')!.id;
     const a = await t.manager.prepare('sala-1', { title: 'A', sourceLanguage: 'es' });
-    t.store.failures.set('startSession', 1);
-    await expect(t.manager.start(a.sessionId)).rejects.toThrow('fake failure: startSession');
+    // A lost start write is reconciled against the row: still prepared after the budget, so the start fails.
+    t.store.failures.set('startSession', Infinity);
+    await expect(t.manager.start(a.sessionId, { confirmedTestId: testId }, { confirmedTestId: null }, { confirmedTestId: null })).rejects.toMatchObject({ status: 503, code: 'storage_unavailable' });
+    t.store.failures.delete('startSession');
     expect(t.manager.testForRoom('sala-1')?.state).toBe('listening');
     expect(testLink.closed).toBeNull();
-    await t.manager.start(a.sessionId);
+    expect(t.store.sessions.get(a.sessionId)?.state).toBe('prepared');
+    await t.manager.start(a.sessionId, { confirmedTestId: testId }, { confirmedTestId: null }, { confirmedTestId: null });
     expect(t.manager.testForRoom('sala-1')).toBeNull();
     expect(testLink.sent[testLink.sent.length - 1]).toEqual({ type: 'test', state: 'ended', reason: 'session_started' });
     expect(testLink.closed).toEqual({ code: 4410, reason: 'session-started' });
@@ -385,7 +389,7 @@ describe('RuntimeSessionManager stream policy and start', () => {
   it('lists sessions without availableLanguages, from a runtime or from the store alike', async () => {
     const t = await twoRooms();
     const a = await t.manager.prepare('sala-1', { title: 'A', sourceLanguage: 'es' });
-    await t.manager.start(a.sessionId);
+    await t.manager.start(a.sessionId, { confirmedTestId: null }, { confirmedTestId: null });
     const withRuntime = (await t.manager.listAdminRooms())[0]!.sessions[0]!;
     expect(withRuntime).toMatchObject({ sessionId: a.sessionId, state: 'starting', roomSlug: 'sala-1', sourceLanguage: 'es' });
     expect(withRuntime).not.toHaveProperty('availableLanguages');

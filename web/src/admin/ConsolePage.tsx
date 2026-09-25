@@ -1,26 +1,32 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { useAuth, useClerk, useUser } from '@clerk/react';
-import type { AdminRoom, RuntimeConfig, SessionRecord, SourceLanguage } from '@nerditulos/shared';
-import { ApiError, adminApi } from '../api.js';
+import type { AdminRoom, AdminSourceTest, RuntimeConfig, SessionRecord, SourceLanguage } from '@nerditulos/shared';
+import { ApiError, adminApi, type TokenSupplier } from '../api.js';
 import { LANGUAGE_NATIVE_NAMES, stateLabel } from '../i18n.js';
 import { IconFileAudio, IconMic, IconTriangleAlert, IconUser, StatusIcon } from '../icons.js';
 import { hrefWithLang, langFromSearch } from '../language.js';
 import { useLanguage } from '../LanguageProvider.js';
 import { LanguageSwitch } from '../LanguageSwitch.js';
+import { adminPath, navigate, replace } from '../router.js';
 import { formatDbfs, meterFraction, NO_SIGNAL_RMS, toDbfs } from './capture/level.js';
 import { noticeText } from './capture/notices.js';
 import { testEndMessage } from './capture/preview.js';
 import { getCapture, type CaptureSnapshot } from './capture/runtime.js';
-import { checkLabel, consoleView, formatElapsed, formatTrackProcessing, startWarningText, testLanguageFor } from './capture/viewModel.js';
+import { checkLabel, consoleView, formatElapsed, formatTrackProcessing, startWarningText } from './capture/viewModel.js';
 import { consoleStrings, type ConsoleStrings } from './consoleStrings.js';
+import { drafts } from './drafts.js';
+import { useAdminIdentity } from './identity.js';
 import { openReaderWindow, readerPath, readerWindowName } from './readerWindow.js';
+import { createSequence } from './sequence.js';
+import { decideAfterTestActive, decideStart } from './startDecision.js';
 
 type Gate =
   | { kind: 'checking' }
-  | { kind: 'ok'; userId: string }
+  | { kind: 'ok'; userId: string | null }
   | { kind: 'not_configured' }
   | { kind: 'forbidden' }
   | { kind: 'unauthenticated' }
+  /** Demo mode was switched off while this tab was open: nothing works until a reload. */
+  | { kind: 'demo_disabled' }
   | { kind: 'error' };
 
 function gateMessage(d: ConsoleStrings, gate: Gate): { text: string; tone: 'error' | 'warning' } | null {
@@ -31,6 +37,8 @@ function gateMessage(d: ConsoleStrings, gate: Gate): { text: string; tone: 'erro
       return { text: d.gateForbidden, tone: 'error' };
     case 'unauthenticated':
       return { text: d.gateUnauthenticated, tone: 'error' };
+    case 'demo_disabled':
+      return { text: d.demoDisabled, tone: 'warning' };
     case 'error':
       return { text: d.gateCheckFailed, tone: 'error' };
     default:
@@ -39,35 +47,46 @@ function gateMessage(d: ConsoleStrings, gate: Gate): { text: string; tone: 'erro
 }
 
 const ACTIVE_STATES = new Set(['starting', 'live', 'interrupted', 'finishing']);
+/** A `starting` session without a sender is offered to other consoles only after this long. */
+const ORPHAN_START_MS = 10000;
+const POLL_MS = 5000;
 
 function activeSession(room: AdminRoom): SessionRecord | null {
   return room.sessions.find((s) => ACTIVE_STATES.has(s.state)) ?? null;
 }
 
-export function ConsolePage({ config }: { config: RuntimeConfig }) {
+export function ConsolePage({ config, roomSlug }: { config: RuntimeConfig; roomSlug: string | null }) {
   const [lang] = useLanguage();
   const d = consoleStrings(lang);
-  const { getToken } = useAuth();
-  const { user } = useUser();
-  const clerk = useClerk();
-  const tokenSupplier = useCallback(() => getToken(), [getToken]);
+  const identity = useAdminIdentity();
+  const tokenSupplier = identity.getToken;
+  const demo = identity.kind === 'demo';
   const [gate, setGate] = useState<Gate>({ kind: 'checking' });
   const [rooms, setRooms] = useState<AdminRoom[] | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const sequence = useRef(createSequence());
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
+
+  /** A 401 in demo means the server left demo mode: stop everything until a reload. */
+  const onAuthLost = useCallback(() => {
+    setGate(demo ? { kind: 'demo_disabled' } : { kind: 'unauthenticated' });
+  }, [demo]);
 
   const loadRooms = useCallback(async () => {
+    if (gateRef.current.kind !== 'ok' && gateRef.current.kind !== 'checking') return;
+    const n = sequence.current.issue();
     try {
       const result = await adminApi.rooms(tokenSupplier);
+      if (!sequence.current.accept(n)) return;
       setRooms(result.rooms);
-      setSelectedRoom((current) => current ?? result.rooms[0]?.slug ?? null);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) setGate({ kind: 'unauthenticated' });
+      if (error instanceof ApiError && error.status === 401) onAuthLost();
       else if (error instanceof ApiError && error.status === 403) setGate({ kind: 'forbidden' });
       else if (error instanceof ApiError && error.status === 503) setGate({ kind: 'not_configured' });
     }
-  }, [tokenSupplier]);
+  }, [tokenSupplier, onAuthLost]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,25 +94,46 @@ export function ConsolePage({ config }: { config: RuntimeConfig }) {
       .me(tokenSupplier)
       .then((me) => {
         if (cancelled) return;
-        setGate({ kind: 'ok', userId: me.userId });
+        setGate({ kind: 'ok', userId: me.mode === 'clerk' ? me.userId : null });
         void loadRooms();
       })
       .catch((error: unknown) => {
         if (cancelled) return;
         if (error instanceof ApiError && error.status === 503 && error.code === 'admin_not_configured') setGate({ kind: 'not_configured' });
         else if (error instanceof ApiError && error.status === 403) setGate({ kind: 'forbidden' });
-        else if (error instanceof ApiError && error.status === 401) setGate({ kind: 'unauthenticated' });
+        else if (error instanceof ApiError && error.status === 401) onAuthLost();
         else setGate({ kind: 'error' });
       });
     return () => {
       cancelled = true;
     };
-  }, [tokenSupplier, loadRooms]);
+  }, [tokenSupplier, loadRooms, onAuthLost]);
 
+  // Polling only while the tab is visible; coming back (visibility, focus) refreshes right away.
   useEffect(() => {
     if (gate.kind !== 'ok') return;
-    const timer = window.setInterval(() => void loadRooms(), 5000);
-    return () => window.clearInterval(timer);
+    let timer: number | null = null;
+    const stop = () => {
+      if (timer !== null) window.clearInterval(timer);
+      timer = null;
+    };
+    const startPolling = () => {
+      stop();
+      if (document.visibilityState === 'visible') timer = window.setInterval(() => void loadRooms(), POLL_MS);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void loadRooms();
+      startPolling();
+    };
+    const onFocus = () => void loadRooms();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', onFocus);
+    startPolling();
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [gate.kind, loadRooms]);
 
   useEffect(() => {
@@ -116,6 +156,15 @@ export function ConsolePage({ config }: { config: RuntimeConfig }) {
     document.title = `${config.eventName || d.appTitle} · ${d.consoleTitle}`;
   }, [config.eventName, d.appTitle, d.consoleTitle]);
 
+  // `/admin` canonicalizes to the first room; an unknown slug keeps the tabs and shows no panel.
+  const knownSlug = rooms?.some((r) => r.slug === roomSlug) ?? false;
+  useEffect(() => {
+    if (!rooms || rooms.length === 0 || roomSlug !== null) return;
+    const first = rooms[0];
+    if (first) replace(adminPath(first.slug) + window.location.search);
+  }, [rooms, roomSlug]);
+  const selectedRoom = knownSlug ? roomSlug : null;
+
   const liveRooms = (rooms ?? []).filter((r) => activeSession(r)?.state === 'live');
   useEffect(() => {
     document.documentElement.style.setProperty('--status-bar-height', liveRooms.length > 0 ? '40px' : '0px');
@@ -123,7 +172,7 @@ export function ConsolePage({ config }: { config: RuntimeConfig }) {
   }, [liveRooms.length]);
 
   const message = gateMessage(d, gate);
-  const accountName = user?.primaryEmailAddress?.emailAddress ?? user?.username ?? null;
+  const accountName = identity.kind === 'clerk' ? identity.accountName : null;
 
   return (
     <div className="console">
@@ -132,6 +181,7 @@ export function ConsolePage({ config }: { config: RuntimeConfig }) {
       </a>
       <header className="console__header">
         <img className="console__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
+        {config.demoMode && <span className="chip chip--status-warning">{d.demoChip}</span>}
         <span className="console__spacer" />
         {/* Interface language only: a session's source language is chosen per session below. */}
         <LanguageSwitch />
@@ -141,15 +191,23 @@ export function ConsolePage({ config }: { config: RuntimeConfig }) {
           </button>
           {menuOpen && (
             <div className="dropdown" id="account-panel">
-              {(accountName || gate.kind === 'ok') && (
+              {identity.kind === 'demo' ? (
                 <div className="dropdown__identity">
-                  {accountName && <p className="dropdown__account">{accountName}</p>}
-                  {gate.kind === 'ok' && <p className="dropdown__meta">{gate.userId}</p>}
+                  <p className="dropdown__account">{d.demoIdentity}</p>
                 </div>
+              ) : (
+                <>
+                  {(accountName || gate.kind === 'ok') && (
+                    <div className="dropdown__identity">
+                      {accountName && <p className="dropdown__account">{accountName}</p>}
+                      {gate.kind === 'ok' && gate.userId && <p className="dropdown__meta">{gate.userId}</p>}
+                    </div>
+                  )}
+                  <button type="button" className="dropdown__item" onClick={() => identity.signOut()}>
+                    {d.signOut}
+                  </button>
+                </>
               )}
-              <button type="button" className="dropdown__item" onClick={() => clerk.signOut({ redirectUrl: '/admin' })}>
-                {d.signOut}
-              </button>
             </div>
           )}
         </div>
@@ -173,13 +231,19 @@ export function ConsolePage({ config }: { config: RuntimeConfig }) {
         {message && (
           <div className={`banner banner--${message.tone}`} role="alert">
             {message.text}
+            {gate.kind === 'demo_disabled' && (
+              <button type="button" className="btn btn--secondary" onClick={() => window.location.reload()}>
+                {d.reload}
+              </button>
+            )}
           </div>
         )}
         {gate.kind === 'ok' && !rooms && <p className="page-loading">{d.roomsLoading}</p>}
-        {gate.kind === 'ok' && rooms && rooms.length > 1 && (
+        {(gate.kind === 'ok' || gate.kind === 'demo_disabled') && rooms && rooms.length > 1 && (
           <div className="tabs" role="tablist" aria-label={d.roomsTabs}>
             {rooms.map((room) => {
               const active = activeSession(room);
+              const go = (slug: string) => navigate(adminPath(slug) + window.location.search);
               return (
                 <button
                   key={room.slug}
@@ -190,13 +254,13 @@ export function ConsolePage({ config }: { config: RuntimeConfig }) {
                   aria-selected={selectedRoom === room.slug}
                   aria-controls={`panel-${room.slug}`}
                   tabIndex={selectedRoom === room.slug ? 0 : -1}
-                  onClick={() => setSelectedRoom(room.slug)}
+                  onClick={() => go(room.slug)}
                   onKeyDown={(e) => {
                     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
                     const index = rooms.findIndex((r) => r.slug === room.slug);
                     const next = rooms[(index + (e.key === 'ArrowRight' ? 1 : rooms.length - 1)) % rooms.length];
                     if (next) {
-                      setSelectedRoom(next.slug);
+                      go(next.slug);
                       document.getElementById(`tab-${next.slug}`)?.focus();
                     }
                   }}
@@ -208,12 +272,13 @@ export function ConsolePage({ config }: { config: RuntimeConfig }) {
             })}
           </div>
         )}
-        {gate.kind === 'ok' &&
+        {gate.kind === 'ok' && rooms && rooms.length > 0 && roomSlug !== null && !knownSlug && <p className="card__meta">{d.chooseRoom}</p>}
+        {(gate.kind === 'ok' || gate.kind === 'demo_disabled') &&
           rooms &&
           rooms.map((room) => (
             // Every room panel stays mounted; tabs only change visibility, so capture never unmounts.
             <div key={room.slug} id={`panel-${room.slug}`} role={rooms.length > 1 ? 'tabpanel' : undefined} aria-labelledby={rooms.length > 1 ? `tab-${room.slug}` : undefined} hidden={rooms.length > 1 && selectedRoom !== room.slug}>
-              <RoomPanel room={room} getToken={tokenSupplier} onChanged={loadRooms} drainTimeoutMs={config.drainTimeoutMs} />
+              <RoomPanel room={room} getToken={tokenSupplier} onChanged={loadRooms} onAuthLost={onAuthLost} drainTimeoutMs={config.drainTimeoutMs} appOrigin={config.appOrigin} disabled={gate.kind !== 'ok'} />
             </div>
           ))}
       </main>
@@ -233,17 +298,55 @@ function useCapture(slug: string): CaptureSnapshot {
   );
 }
 
-function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminRoom; getToken: () => Promise<string | null>; onChanged: () => Promise<void>; drainTimeoutMs: number }) {
+function useDraft(slug: string) {
+  return useSyncExternalStore(
+    (listener) => drafts.subscribe(slug, listener),
+    () => drafts.get(slug),
+    () => drafts.get(slug),
+  );
+}
+
+interface SessionTarget {
+  sessionId: string;
+  title: string;
+}
+
+interface StartTarget extends SessionTarget {
+  testId: string;
+  testSourceLanguage: SourceLanguage;
+}
+
+function RoomPanel({
+  room,
+  getToken,
+  onChanged,
+  onAuthLost,
+  drainTimeoutMs,
+  appOrigin,
+  disabled,
+}: {
+  room: AdminRoom;
+  getToken: TokenSupplier;
+  onChanged: () => Promise<void>;
+  onAuthLost: () => void;
+  drainTimeoutMs: number;
+  appOrigin: string;
+  disabled: boolean;
+}) {
   const [lang] = useLanguage();
   const d = consoleStrings(lang);
   const capture = getCapture(room.slug);
   const snap = useCapture(room.slug);
-  const [title, setTitle] = useState('');
-  const [language, setLanguage] = useState<SourceLanguage>('es');
+  const draft = useDraft(room.slug);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const cancelRef = useRef<HTMLButtonElement>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [finishTarget, setFinishTarget] = useState<SessionTarget | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SessionTarget | null>(null);
+  const [startTarget, setStartTarget] = useState<StartTarget | null>(null);
+  const finishDialog = useRef<HTMLDialogElement>(null);
+  const deleteDialog = useRef<HTMLDialogElement>(null);
+  const startDialog = useRef<HTMLDialogElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const roomVar = { ['--room' as string]: `var(--room-${((room.index - 1) % 8) + 1})` } as React.CSSProperties;
   const readerHref = hrefWithLang(readerPath(room.slug), langFromSearch(window.location.search));
@@ -253,6 +356,16 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
     if (openReaderWindow(room.slug, readerHref)) event.preventDefault();
     // Blocked: the anchor's named target still opens or reuses the window, with a full load.
   };
+
+  useEffect(() => {
+    if (finishTarget) finishDialog.current?.showModal();
+  }, [finishTarget]);
+  useEffect(() => {
+    if (deleteTarget) deleteDialog.current?.showModal();
+  }, [deleteTarget]);
+  useEffect(() => {
+    if (startTarget) startDialog.current?.showModal();
+  }, [startTarget]);
 
   const active = activeSession(room);
   // The socket's state messages are fresher than polling, but only while that socket is open and
@@ -274,73 +387,166 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
   // A test ended by the server because the room is taken: the polled state is stale.
   const testEndedReason = snap.preview?.state === 'ended' ? snap.preview.endedReason : null;
   useEffect(() => {
-    if (testEndedReason === 'room_busy' || testEndedReason === 'session_started') void onChanged();
+    if (testEndedReason === 'room_busy' || testEndedReason === 'session_started' || testEndedReason === 'test_active') void onChanged();
   }, [testEndedReason, onChanged]);
   // "Start" belongs to a prepared session, evaluated with the room's capture state.
   const preparedView = consoleView(d, { sessionState: 'prepared', cause: null, capture: snap.state, sourceChecked: capture.sourceChecked, signal: snap.checks.signal, tested: snap.testedSource });
-  const canStartPrepared = active === null && preparedView.canStart;
+  const canStartPrepared = active === null && preparedView.canStart && !disabled;
   const startWarning = active === null ? preparedView.startWarning : null;
-  const testStageVisible = snap.sourceKind !== null && (view.canTest || view.canStopTest);
+  const sourceOff = snap.sourceKind === null && snap.remembered !== null;
+  const testStageVisible = (snap.sourceKind !== null || sourceOff) && (view.canTest || view.canStopTest || sourceOff);
   const testEnd = snap.preview?.state === 'ended' && snap.preview.endedReason ? testEndMessage(d, snap.preview.endedReason) : null;
   const visibleSession = room.sessions.find((s) => s.sessionId === room.visibleSessionId) ?? null;
   // Current: not finished yet, plus the finished session attendees still see. The rest folds under "Finished sessions".
   const currentSessions = room.sessions.filter((s) => s.state !== 'finished' || s.sessionId === room.visibleSessionId);
   const finishedSessions = room.sessions.filter((s) => !currentSessions.includes(s));
+  const testLanguage = snap.testLanguage ?? draft.language;
+  // Attach this console's source to a started session nobody is feeding: right away for a session this
+  // console started, after a grace period for one started elsewhere (its own sender may still be connecting).
+  const ownSession = active !== null && snap.sessionId === active.sessionId;
+  const orphanAge = active?.startedAt ? Date.now() - Date.parse(active.startedAt) : 0;
+  const canConnect = view.canReconnect && active !== null && !active.senderActive && (ownSession || active.state !== 'starting' || orphanAge > ORPHAN_START_MS) && !disabled;
+
+  /** Failures every action shares: lost demo access, a refused origin, or the given fallback text. */
+  const failed = (error: unknown, fallback: (code: string | null) => string) => {
+    if (error instanceof ApiError) {
+      if (error.status === 401) {
+        onAuthLost();
+        return;
+      }
+      if (error.status === 403 && error.code === 'origin_not_allowed') {
+        setActionError(d.originNotAllowed(appOrigin));
+        return;
+      }
+      setActionError(fallback(error.code));
+      return;
+    }
+    setActionError(fallback(null));
+  };
 
   const prepare = async (event: React.FormEvent) => {
     event.preventDefault();
+    const submitted = draft.title;
     setBusy('prepare');
     setActionError(null);
+    setNotice(null);
     try {
-      await adminApi.prepare(getToken, room.slug, { title, sourceLanguage: language });
-      setTitle('');
+      await adminApi.prepare(getToken, room.slug, { title: submitted, sourceLanguage: draft.language });
+      drafts.clearTitleIf(room.slug, submitted);
       await onChanged();
     } catch (e) {
-      setActionError(d.prepareFailed(e instanceof ApiError ? e.code : null));
+      failed(e, d.prepareFailed);
     } finally {
       setBusy(null);
     }
   };
 
-  const start = async (session: SessionRecord) => {
-    setBusy(session.sessionId);
+  const doStart = async (sessionId: string, confirmedTestId: string | null) => {
+    setBusy(sessionId);
     setActionError(null);
-    // The room's test socket closes before the session's sender authenticates.
-    if (snap.state === 'testing') capture.stopTest('session_started');
+    setNotice(null);
     try {
-      await adminApi.start(getToken, session.sessionId);
-      await onChanged();
-      await capture.start(session.sessionId);
+      await adminApi.start(getToken, sessionId, confirmedTestId ? { confirmedTestId } : {});
     } catch (e) {
-      if (e instanceof ApiError && e.code === 'room_busy') {
-        const blocking = (e.body as { blockingTitle?: string } | null)?.blockingTitle ?? d.otherSession;
-        setActionError(d.roomBusy(blocking));
-      } else setActionError(d.startFailed(e instanceof ApiError ? e.code : null));
+      if (e instanceof ApiError) {
+        const body = (e.body ?? {}) as { testId?: string; testSourceLanguage?: SourceLanguage; blockingTitle?: string };
+        if (e.status === 409 && e.code === 'test_active' && body.testId) {
+          // The room's test changed since the decision: ask about the current one, once.
+          const next = decideAfterTestActive({ refusedTestId: body.testId, refusedSourceLanguage: body.testSourceLanguage ?? 'es', confirmedTestId, ownTestId: snap.testId });
+          const session = room.sessions.find((s) => s.sessionId === sessionId);
+          if (next?.kind === 'send') {
+            setBusy(null);
+            return doStart(sessionId, next.confirmedTestId);
+          }
+          if (next?.kind === 'confirm' && session) setStartTarget({ sessionId, title: session.title, testId: next.testId, testSourceLanguage: next.testSourceLanguage });
+          else setActionError(d.testChanged);
+        } else if (e.status === 409 && e.code === 'room_busy') setActionError(d.roomBusy(body.blockingTitle ?? d.otherSession));
+        else if (e.status === 409 && e.code === 'not_prepared') setActionError(d.startNotPrepared);
+        else if (e.status === 404) setActionError(d.deletedMeanwhile);
+        else failed(e, d.startFailed);
+      } else {
+        // No answer: the start may have committed. The refreshed list decides what to offer next.
+        setNotice(d.startResponseLost);
+      }
+      setBusy(null);
+      void onChanged();
+      return;
+    }
+    await onChanged();
+    try {
+      await capture.start(sessionId);
+    } catch {
+      // The capture reports its own failure in its snapshot.
+    }
+    setBusy(null);
+    void onChanged();
+  };
+
+  const start = (session: SessionRecord) => {
+    setActionError(null);
+    const decision = decideStart({ roomTest: room.test, ownTestId: snap.testId });
+    if (decision.kind === 'confirm') {
+      setStartTarget({ sessionId: session.sessionId, title: session.title, testId: decision.testId, testSourceLanguage: decision.testSourceLanguage });
+      return;
+    }
+    void doStart(session.sessionId, decision.confirmedTestId);
+  };
+
+  const confirmStart = () => {
+    const target = startTarget;
+    startDialog.current?.close();
+    setStartTarget(null);
+    if (!target) return;
+    void doStart(target.sessionId, target.testId);
+  };
+
+  const finish = async () => {
+    const target = finishTarget;
+    finishDialog.current?.close();
+    setFinishTarget(null);
+    if (!target) return;
+    setBusy('finish');
+    setActionError(null);
+    setNotice(null);
+    try {
+      if (snap.sessionId === target.sessionId && (snap.state === 'streaming' || snap.state === 'paused')) {
+        await capture.finish();
+      } else {
+        const result = await adminApi.finish(getToken, target.sessionId);
+        // A start of this console still connecting to that session has nothing to connect to any more.
+        if (snap.sessionId === target.sessionId) capture.abort();
+        if (result.alreadyFinished) setNotice(d.alreadyFinished);
+      }
+      await onChanged();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) setActionError(d.deletedMeanwhile);
+      else failed(e, d.finishFailed);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async () => {
+    const target = deleteTarget;
+    deleteDialog.current?.close();
+    setDeleteTarget(null);
+    if (!target) return;
+    setBusy('delete');
+    setActionError(null);
+    setNotice(null);
+    try {
+      await adminApi.delete(getToken, target.sessionId);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.code === 'not_deletable') setActionError(d.notDeletable);
+      else if (e instanceof ApiError && e.status === 404) setActionError(d.deletedMeanwhile);
+      else failed(e, d.deleteFailed);
     } finally {
       setBusy(null);
       void onChanged();
     }
   };
 
-  const finish = async () => {
-    dialogRef.current?.close();
-    if (!active) return;
-    setBusy('finish');
-    try {
-      if (snap.sessionId === active.sessionId && (snap.state === 'streaming' || snap.state === 'paused' || snap.state === 'connecting')) {
-        await capture.finish();
-      } else {
-        await adminApi.finish(getToken, active.sessionId);
-      }
-      await onChanged();
-    } catch (e) {
-      setActionError(d.finishFailed(e instanceof ApiError ? e.code : null));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const reconnect = async () => {
+  const connect = async () => {
     if (!active) return;
     setActionError(null);
     if (snap.sessionId !== active.sessionId) {
@@ -351,10 +557,7 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
     void onChanged();
   };
 
-  const openDialog = () => {
-    dialogRef.current?.showModal();
-    cancelRef.current?.focus();
-  };
+  const testLabel = (langOf: SourceLanguage) => (snap.sourceKind === 'file' || snap.remembered?.kind === 'file' ? d.testFileIn(langOf.toUpperCase()) : d.testMicrophoneIn(langOf.toUpperCase()));
 
   const renderSession = (s: SessionRecord) => {
     const label = stateLabel(d, s.state);
@@ -375,9 +578,14 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
         </span>
         {s.state === 'prepared' && (
           <span className="stack stack--tight">
-            <button type="button" className="btn btn--primary" disabled={!canStartPrepared || busy !== null} onClick={() => void start(s)}>
-              {d.start}
-            </button>
+            <span className="row">
+              <button type="button" className="btn btn--primary" disabled={!canStartPrepared || busy !== null} onClick={() => start(s)}>
+                {d.start}
+              </button>
+              <button type="button" className="btn btn--danger" disabled={busy !== null || disabled} onClick={() => setDeleteTarget({ sessionId: s.sessionId, title: s.title })}>
+                {d.delete}
+              </button>
+            </span>
             {canStartPrepared && startWarning && (
               <span className="start-warning">
                 <IconTriangleAlert />
@@ -455,6 +663,17 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
                 {snap.file && ` · ${snap.file.currentTime.toFixed(1)} s / ${Number.isFinite(snap.file.duration) ? snap.file.duration.toFixed(1) : '?'} s`}
               </p>
             )}
+            {sourceOff && snap.remembered && (
+              <div className="banner banner--off" role="status">
+                <span>
+                  {d.sourceOff} · {snap.remembered.label || d.microphoneFallback}
+                </span>
+                <button type="button" className="btn btn--secondary" disabled={snap.state === 'checking'} onClick={() => void capture.reopen()}>
+                  {d.reopenSource}
+                </button>
+                <span className="card__meta">{d.sourceOffHint}</span>
+              </div>
+            )}
             {snap.sourceKind === 'microphone' && (
               <p className="card__meta card__meta--quiet">
                 {d.processing}: {formatTrackProcessing(d, snap.trackSettings)}
@@ -490,8 +709,8 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
               <div className="test-stage stack">
                 <div className="row">
                   {view.canTest && (
-                    <button type="button" className="btn btn--secondary" onClick={() => void capture.startTest(testLanguageFor(room.sessions))}>
-                      {snap.sourceKind === 'file' ? d.testFile : d.testMicrophone}
+                    <button type="button" className="btn btn--secondary" disabled={disabled} onClick={() => void capture.startTest(draft.language)}>
+                      {testLabel(draft.language)}
                     </button>
                   )}
                   {view.canStopTest && (
@@ -512,7 +731,7 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
                     {d.headphonesWarning}
                   </p>
                 )}
-                <div className="check-preview" aria-live="off" lang={testLanguageFor(room.sessions)}>
+                <div className="check-preview" aria-live="off" lang={testLanguage}>
                   <div className="check-preview__text">
                     {snap.preview && (snap.preview.text || snap.preview.partial) ? (
                       <>
@@ -546,6 +765,11 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
                 {actionError}
               </div>
             )}
+            {notice && !actionError && (
+              <div className="banner banner--warning" role="status">
+                {notice}
+              </div>
+            )}
             <div className="row">
               {view.canPause && (
                 <button type="button" className="btn btn--secondary" onClick={() => void capture.pause()}>
@@ -571,13 +795,13 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
                   />
                 </label>
               )}
-              {view.canReconnect && (
-                <button type="button" className="btn btn--secondary" onClick={() => void reconnect()}>
-                  {d.reconnect}
+              {canConnect && (
+                <button type="button" className="btn btn--secondary" onClick={() => void connect()}>
+                  {ownSession ? d.reconnect : d.connectSource}
                 </button>
               )}
-              {view.canFinish && (
-                <button type="button" className="btn btn--danger" disabled={busy === 'finish'} onClick={openDialog}>
+              {view.canFinish && active && (
+                <button type="button" className="btn btn--danger" disabled={busy === 'finish' || disabled} onClick={() => setFinishTarget({ sessionId: active.sessionId, title: active.title })}>
                   {d.finish}
                 </button>
               )}
@@ -595,19 +819,19 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
                 <label className="field__label" htmlFor={`title-${room.slug}`}>
                   {d.talkTitle}
                 </label>
-                <input id={`title-${room.slug}`} className="field__input" value={title} onChange={(e) => setTitle(e.target.value)} required maxLength={200} placeholder={d.talkTitlePlaceholder} />
+                <input id={`title-${room.slug}`} className="field__input" value={draft.title} onChange={(e) => drafts.set(room.slug, { title: e.target.value })} required maxLength={200} placeholder={d.talkTitlePlaceholder} />
               </div>
               <div className="field">
                 <label className="field__label" htmlFor={`lang-${room.slug}`}>
                   {d.sourceLanguage}
                 </label>
-                <select id={`lang-${room.slug}`} className="field__input" value={language} onChange={(e) => setLanguage(e.target.value as SourceLanguage)}>
+                <select id={`lang-${room.slug}`} className="field__input" value={draft.language} onChange={(e) => drafts.set(room.slug, { language: e.target.value as SourceLanguage })}>
                   <option value="es">{d.sourceOption.es}</option>
                   <option value="en">{d.sourceOption.en}</option>
                 </select>
               </div>
               <div className="row">
-                <button type="submit" className="btn btn--outline" disabled={busy === 'prepare' || !title.trim()}>
+                <button type="submit" className="btn btn--outline" disabled={busy === 'prepare' || !draft.title.trim() || disabled}>
                   {d.prepareSession}
                 </button>
               </div>
@@ -627,13 +851,14 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
           </div>
         </div>
       </div>
-      <dialog ref={dialogRef} className="modal" aria-labelledby={`finish-title-${room.slug}`}>
+      <dialog ref={finishDialog} className="modal" aria-labelledby={`finish-title-${room.slug}`} onClose={() => setFinishTarget(null)}>
         <h2 className="modal__title" id={`finish-title-${room.slug}`}>
           {d.finishDialogTitle}
         </h2>
+        {finishTarget && <p className="card__meta">{d.finishDialogSession(finishTarget.title)}</p>}
         <p>{d.finishDialogBody(Math.round(drainTimeoutMs / 1000))}</p>
         <div className="modal__actions">
-          <button ref={cancelRef} type="button" className="btn btn--secondary" onClick={() => dialogRef.current?.close()}>
+          <button type="button" className="btn btn--secondary" autoFocus onClick={() => finishDialog.current?.close()}>
             {d.cancel}
           </button>
           <button type="button" className="btn btn--danger" onClick={() => void finish()}>
@@ -641,6 +866,37 @@ function RoomPanel({ room, getToken, onChanged, drainTimeoutMs }: { room: AdminR
           </button>
         </div>
       </dialog>
+      <dialog ref={deleteDialog} className="modal" aria-labelledby={`delete-title-${room.slug}`} onClose={() => setDeleteTarget(null)}>
+        <h2 className="modal__title" id={`delete-title-${room.slug}`}>
+          {d.deleteDialogTitle}
+        </h2>
+        <p>{d.deleteDialogBody(deleteTarget?.title ?? '')}</p>
+        <div className="modal__actions">
+          <button type="button" className="btn btn--secondary" autoFocus onClick={() => deleteDialog.current?.close()}>
+            {d.cancel}
+          </button>
+          <button type="button" className="btn btn--danger" onClick={() => void remove()}>
+            {d.deleteSession}
+          </button>
+        </div>
+      </dialog>
+      <dialog ref={startDialog} className="modal" aria-labelledby={`start-title-${room.slug}`} onClose={() => setStartTarget(null)}>
+        <h2 className="modal__title" id={`start-title-${room.slug}`}>
+          {d.startConfirmTitle}
+        </h2>
+        {startTarget && <p className="card__meta">{d.finishDialogSession(startTarget.title)}</p>}
+        <p>{d.startConfirmBody(startTarget ? LANGUAGE_NATIVE_NAMES[startTarget.testSourceLanguage] : '')}</p>
+        <div className="modal__actions">
+          <button type="button" className="btn btn--secondary" autoFocus onClick={() => startDialog.current?.close()}>
+            {d.cancel}
+          </button>
+          <button type="button" className="btn btn--danger" onClick={confirmStart}>
+            {d.startAnyway}
+          </button>
+        </div>
+      </dialog>
     </section>
   );
 }
+
+export type { AdminSourceTest };

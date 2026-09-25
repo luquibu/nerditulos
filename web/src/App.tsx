@@ -1,6 +1,5 @@
 import { Suspense, lazy, useEffect, useState, useSyncExternalStore } from 'react';
 import type { RuntimeConfig } from '@nerditulos/shared';
-import { shouldMountClerk } from './clerkMount.js';
 import { RoomsPage } from './RoomsPage.js';
 import { RoomPage } from './attendee/RoomPage.js';
 import { isAnyCaptureActive, subscribeCaptureActive } from './admin/capture/registry.js';
@@ -10,7 +9,7 @@ import { useLanguage } from './LanguageProvider.js';
 import { LanguageSwitch } from './LanguageSwitch.js';
 import { matchRoute, usePathname } from './router.js';
 
-// The admin shell (ClerkProvider, console, capture) is a separate chunk that attendee pages never load.
+// The admin shell (console, capture, and with Clerk its provider) is a separate chunk that attendee pages never load.
 const AdminShell = lazy(() => import('./admin/AdminShell.js'));
 
 function useCaptureActive(): boolean {
@@ -21,7 +20,8 @@ export function App({ config }: { config: RuntimeConfig }) {
   const pathname = usePathname();
   const route = matchRoute(pathname);
   const captureActive = useCaptureActive();
-  const mountClerk = shouldMountClerk(pathname, captureActive);
+  // The shell stays mounted while any capture is active, whatever the page, so the capture runtime keeps its identity.
+  const mountShell = route.kind === 'admin' || captureActive;
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -49,13 +49,11 @@ export function App({ config }: { config: RuntimeConfig }) {
       page = <NotFound eventName={config.eventName} />;
   }
 
-  if (!mountClerk) return <>{page}</>;
+  if (!mountShell) return <>{page}</>;
 
-  // While Clerk is mounted (admin path or active capture) the admin shell stays mounted so the
-  // capture runtime keeps its token supplier; other pages render inside it as a child.
   return (
     <Suspense fallback={<LoadingAdmin />}>
-      <AdminShell config={config} showConsole={route.kind === 'admin'}>
+      <AdminShell config={config} showConsole={route.kind === 'admin'} roomSlug={route.kind === 'admin' ? route.slug : null}>
         {page}
       </AdminShell>
     </Suspense>

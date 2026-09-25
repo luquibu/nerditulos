@@ -34,6 +34,8 @@ Keep the Soniox API key and Clerk secret key on the backend. The Clerk publishab
 
 Clerk establishes identity; the server authorizes only the user matching ADMIN_USER_ID. Missing configuration and other signed-in accounts grant no administrative access. Check controls, audio, and persistent-connection opening and renewal; expired identity requires revalidation or closure.
 
+DEMO_MODE=true is the only way to administer without identity: it is an explicit server switch for supervised showcases, never a default, and it keeps the origin check on mutations and on the audio socket. Several consoles may operate the same rooms at once in either mode: decide start, delete, and finish on the session's current state, serialized per room, and never let one console's action silently replace another console's source or interrupt its test without a confirmation bound to that test's id.
+
 Update .env.example when required configuration changes. Use placeholders for secrets and keep real credentials out of code, logs, screenshots, and reports.
 
 Preserve PostgreSQL data during routine container maintenance. Do not delete its persistent volume or use docker compose down -v as routine cleanup.

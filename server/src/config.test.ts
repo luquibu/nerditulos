@@ -40,6 +40,16 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...base, PUBLIC_WINDOW_SEGMENTS: '0' })).toThrow(ConfigError);
   });
 
+  it('reads DEMO_MODE as a strict flag: unset and false are off, true is on, anything else is an error', () => {
+    expect(loadConfig(base).demoMode).toBe(false);
+    expect(loadConfig({ ...base, DEMO_MODE: '' }).demoMode).toBe(false);
+    expect(loadConfig({ ...base, DEMO_MODE: 'false' }).demoMode).toBe(false);
+    expect(loadConfig({ ...base, DEMO_MODE: 'true' }).demoMode).toBe(true);
+    expect(loadConfig({ ...base, DEMO_MODE: 'True\r' }).demoMode).toBe(true);
+    expect(() => loadConfig({ ...base, DEMO_MODE: '1' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...base, DEMO_MODE: 'yes' })).toThrow(ConfigError);
+  });
+
   it('rejects an APP_ORIGIN with a path and adds localhost origins outside production', () => {
     expect(() => loadConfig({ ...base, APP_ORIGIN: 'https://captions.example.org/app' })).toThrow(ConfigError);
     expect(loadConfig({ ...base, NODE_ENV: 'production' }).allowedOrigins).toEqual(['https://captions.example.org']);

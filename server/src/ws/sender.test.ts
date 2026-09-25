@@ -42,7 +42,7 @@ class FakeWs extends EventEmitter {
 const ADMIN = 'user_admin';
 const FORMAT = { encoding: 'pcm_s16le', sampleRate: 16000, channels: 1, chunkSamples: 1600 };
 
-async function harness(opts: { adminUserId?: string; exp?: () => number; now?: () => number } = {}) {
+async function harness(opts: { adminUserId?: string; exp?: () => number; now?: () => number; demoMode?: boolean } = {}) {
   const store = new FakeStore();
   const room = await store.upsertRoom('sala-1', 'Sala 1');
   const room2 = await store.upsertRoom('sala-2', 'Sala 2');
@@ -66,7 +66,7 @@ async function harness(opts: { adminUserId?: string; exp?: () => number; now?: (
     if (token === 'other') return { ok: false, code: 'forbidden' };
     return { ok: false, code: 'unauthenticated' };
   };
-  const options: SenderServerOptions = { allowedOrigins: ['https://x'], verifyAdmin: verify, manager, log: silentLogger, now: opts.now, pingIntervalMs: 1e9 };
+  const options: SenderServerOptions = { allowedOrigins: ['https://x'], verifyAdmin: verify, demoMode: opts.demoMode ?? false, manager, log: silentLogger, now: opts.now, pingIntervalMs: 1e9 };
   const connect = () => {
     const ws = new FakeWs();
     const conn = new SenderConnection(ws as never, options);
@@ -111,7 +111,7 @@ describe('sender socket auth and codes', () => {
     notStarted.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: FORMAT });
     await flush();
     expect(notStarted.ws.closed?.code).toBe(4404);
-    await h.manager.start(h.prepared.sessionId);
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: null });
     const badFormat = h.connect();
     badFormat.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: { ...FORMAT, sampleRate: 48000 } });
     await flush();
@@ -123,7 +123,7 @@ describe('sender socket auth and codes', () => {
 
   it('accepts the first sender, rejects a second with 4409 sender-active, and classifies positions', async () => {
     const h = await harness();
-    await h.manager.start(h.prepared.sessionId);
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: null });
     const a = h.connect();
     a.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: FORMAT });
     await flush();
@@ -147,7 +147,7 @@ describe('sender socket auth and codes', () => {
 
   it('binds the socket to the session: frames after finish are dropped and the socket closes 4404', async () => {
     const h = await harness();
-    await h.manager.start(h.prepared.sessionId);
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: null });
     const a = h.connect();
     a.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: FORMAT });
     await flush();
@@ -166,7 +166,7 @@ describe('sender socket auth and codes', () => {
 
   it('socket close while live interrupts the session as sender_lost/socket_closed', async () => {
     const h = await harness();
-    await h.manager.start(h.prepared.sessionId);
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: null });
     const a = h.connect();
     a.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: FORMAT });
     await flush();
@@ -188,7 +188,7 @@ describe('sender socket renewal and expiry', () => {
 
   it('renewal before exp keeps frames flowing', async () => {
     const h = await timed();
-    await h.manager.start(h.prepared.sessionId);
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: null });
     const a = h.connect();
     a.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: FORMAT });
     await vi.advanceTimersByTimeAsync(1);
@@ -203,7 +203,7 @@ describe('sender socket renewal and expiry', () => {
 
   it('without renewal frames after exp are dropped and counted; close 4401 at exp + 10 s', async () => {
     const h = await timed();
-    await h.manager.start(h.prepared.sessionId);
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: null });
     const a = h.connect();
     a.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: FORMAT });
     await vi.advanceTimersByTimeAsync(1);
@@ -224,7 +224,7 @@ describe('sender socket renewal and expiry', () => {
 
   it('late renewal at exp + 5 s: frames in between dropped and counted, frames after accepted', async () => {
     const h = await timed();
-    await h.manager.start(h.prepared.sessionId);
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: null });
     const a = h.connect();
     a.ws.text({ type: 'auth', token: 'valid', sessionId: h.prepared.sessionId, format: FORMAT });
     await vi.advanceTimersByTimeAsync(1);
@@ -279,7 +279,7 @@ describe('sender socket source test', () => {
     const h = await harness();
     h.store.calls.length = 0;
     const c = await testing(h);
-    expect(c.ws.messages()).toEqual([{ type: 'ready', epoch: 1, expectedPosition: 0 }, { type: 'test', state: 'listening' }]);
+    expect(c.ws.messages()).toEqual([{ type: 'ready', epoch: 1, expectedPosition: 0, testId: h.manager.testForRoom('sala-1')!.id }, { type: 'test', state: 'listening' }]);
     const provider = h.factory.all[0]!;
     expect(provider.input).toMatchObject({ sourceLanguage: 'es', translationTarget: null });
     expect(provider.input.clientReferenceId).toMatch(/^test\/sala-1\/\d+$/);
@@ -292,7 +292,7 @@ describe('sender socket source test', () => {
     const h = await harness();
     h.factory.openBehavior = 'deferred';
     const c = await testing(h);
-    expect(c.ws.messages()).toEqual([{ type: 'ready', epoch: 1, expectedPosition: 0 }]);
+    expect(c.ws.messages()).toEqual([{ type: 'ready', epoch: 1, expectedPosition: 0, testId: expect.any(String) }]);
     c.ws.binary(0, 0);
     const provider = h.factory.all[0]!;
     expect(provider.deliveredSamples()).toBe(0);
@@ -322,7 +322,7 @@ describe('sender socket source test', () => {
     expect(h.factory.all[0]!.terminated).toBe(true);
     expect(h.manager.testForRoom('sala-1')).toBeNull();
     const again = await testing(h);
-    expect(again.ws.messages()[0]).toEqual({ type: 'ready', epoch: 1, expectedPosition: 0 });
+    expect(again.ws.messages()[0]).toEqual({ type: 'ready', epoch: 1, expectedPosition: 0, testId: expect.any(String) });
     again.ws.close(1001, 'going away');
     await flush();
     expect(h.factory.all[1]!.terminated).toBe(true);
@@ -331,12 +331,12 @@ describe('sender socket source test', () => {
 
   it('rejects a test in a room with an active session and a second test in the same room', async () => {
     const h = await harness();
-    await h.manager.start(h.prepared.sessionId);
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: null });
     const busy = await testing(h);
     expect(busy.ws.messages()[0]).toEqual({ type: 'rejected', reason: 'room-busy' });
     expect(busy.ws.closed).toEqual({ code: 4409, reason: 'room-busy' });
     const first = await testing(h, { room: 'sala-2', sourceLanguage: 'en' });
-    expect(first.ws.messages()[0]).toEqual({ type: 'ready', epoch: 1, expectedPosition: 0 });
+    expect(first.ws.messages()[0]).toEqual({ type: 'ready', epoch: 1, expectedPosition: 0, testId: expect.any(String) });
     const second = await testing(h, { room: 'sala-2', sourceLanguage: 'en' });
     expect(second.ws.messages()[0]).toEqual({ type: 'rejected', reason: 'test-active' });
     expect(second.ws.closed).toEqual({ code: 4409, reason: 'test-active' });
@@ -346,7 +346,11 @@ describe('sender socket source test', () => {
   it('starting a session in the room ends its test with session_started, and the session sender then attaches', async () => {
     const h = await harness();
     const c = await testing(h);
-    await h.manager.start(h.prepared.sessionId);
+    const testId = (c.ws.messages()[0] as { testId?: string }).testId;
+    expect(testId).toBe(h.manager.testForRoom('sala-1')!.id);
+    await expect(h.manager.start(h.prepared.sessionId, { confirmedTestId: null })).rejects.toMatchObject({ status: 409, code: 'test_active', detail: { testId, testSourceLanguage: 'es' } });
+    expect(c.ws.closed).toBeNull();
+    await h.manager.start(h.prepared.sessionId, { confirmedTestId: testId ?? null });
     expect(c.ws.messages()[c.ws.messages().length - 1]).toEqual({ type: 'test', state: 'ended', reason: 'session_started' });
     expect(c.ws.closed).toEqual({ code: 4410, reason: 'session-started' });
     expect(h.factory.all[0]!.terminated).toBe(true);

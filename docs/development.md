@@ -56,6 +56,8 @@ CLERK_PUBLISHABLE_KEY=
 CLERK_SECRET_KEY=
 # Filled in after the first sign-in (see "Use the application").
 ADMIN_USER_ID=
+# true opens the console without Clerk (README, "Demo mode"). Leave unset or false for normal work.
+DEMO_MODE=false
 
 SONIOX_API_KEY=
 ```

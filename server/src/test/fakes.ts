@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Completeness, InterruptionCause, SenderServerMessage, SessionState, SourceLanguage } from '@nerditulos/shared';
 import type { ProviderConfigInput, ProviderConnection, ProviderFactory, SonioxResponse } from '../provider/soniox.js';
 import type { SenderLink } from '../sessions/senderTarget.js';
-import type { FinalChunkInsert, FinalChunkRow, RoomRow, SessionEventInsert, SessionRow, SessionStore, StreamRow, StreamSpec } from '../sessions/SessionStore.js';
+import type { DeleteSessionResult, FinalChunkInsert, FinalChunkRow, RoomRow, SessionEventInsert, SessionRow, SessionStore, StreamRow, StreamSpec } from '../sessions/SessionStore.js';
 
 const ACTIVE_STATES: ReadonlyArray<SessionState> = ['starting', 'live', 'interrupted', 'finishing'];
 
@@ -23,6 +23,20 @@ export class FakeStore implements SessionStore {
   calls: string[] = [];
   private nextStreamId = 1;
   private nextRoomId = 1;
+  private readonly gates = new Map<string, { entered: () => void; wait: Promise<void> }>();
+
+  /**
+   * Holds the next `name` operation until `release()` is called; `entered` resolves once that
+   * operation has arrived at the gate. For interleaving two callers at a chosen point.
+   */
+  gate(name: string): { entered: Promise<void>; release: () => void } {
+    let release!: () => void;
+    let entered!: () => void;
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    const arrived = new Promise<void>((resolve) => (entered = resolve));
+    this.gates.set(name, { entered, wait });
+    return { entered: arrived, release };
+  }
 
   private async guard(name: string) {
     this.calls.push(name);
@@ -33,6 +47,12 @@ export class FakeStore implements SessionStore {
     }
     const delay = this.latency(name);
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    const gate = this.gates.get(name);
+    if (gate) {
+      this.gates.delete(name);
+      gate.entered();
+      await gate.wait;
+    }
   }
 
   private now(): Date {
@@ -87,9 +107,22 @@ export class FakeStore implements SessionStore {
     const s = this.sessions.get(id);
     return s ? { ...s } : null;
   }
-  async listSessions(roomId: number, limit: number): Promise<SessionRow[]> {
-    await this.guard('listSessions');
-    return [...this.sessions.values()].filter((s) => s.roomId === roomId).reverse().slice(0, limit).map((s) => ({ ...s }));
+  async listRoomSessions(roomId: number, visibleSessionId: string | null, finishedLimit: number): Promise<SessionRow[]> {
+    await this.guard('listRoomSessions');
+    const newestFirst = [...this.sessions.values()].filter((s) => s.roomId === roomId).reverse();
+    const finished = newestFirst.filter((s) => s.state === 'finished').slice(0, finishedLimit);
+    return newestFirst.filter((s) => s.state !== 'finished' || s.id === visibleSessionId || finished.includes(s)).map((s) => ({ ...s }));
+  }
+  async deleteSession(id: string): Promise<DeleteSessionResult> {
+    await this.guard('deleteSession');
+    const s = this.sessions.get(id);
+    if (!s) return 'missing';
+    if (s.state !== 'prepared') return 'not_prepared';
+    const streamIds = this.streams.filter((x) => x.sessionId === id).map((x) => x.id);
+    if (this.chunks.some((c) => streamIds.includes(c.streamId)) || this.events.some((e) => e.sessionId === id) || this.rooms.some((r) => r.visibleSessionId === id)) return 'has_data';
+    this.streams = this.streams.filter((x) => x.sessionId !== id);
+    this.sessions.delete(id);
+    return 'deleted';
   }
   async listUnfinishedSessions(): Promise<SessionRow[]> {
     await this.guard('listUnfinishedSessions');

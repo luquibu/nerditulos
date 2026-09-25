@@ -1,4 +1,4 @@
-import { AUDIO_FORMAT, SENDER_CLOSE, type AdminRoom, type OutputType, type SessionRecord, type SourceLanguage, type SourceTestTarget } from '@nerditulos/shared';
+import { AUDIO_FORMAT, SENDER_CLOSE, type AdminRoom, type AdminSourceTest, type OutputType, type SessionRecord, type SourceLanguage, type SourceTestTarget } from '@nerditulos/shared';
 import type { Logger } from '../log.js';
 import type { StreamHub } from '../public/streamHub.js';
 import type { ProviderFactory } from '../provider/soniox.js';
@@ -26,6 +26,9 @@ const STREAMS_BY_SOURCE_LANGUAGE: Record<SourceLanguage, ReadonlyArray<{ outputT
   ],
 };
 
+/** Finished sessions listed per room, besides every unfinished one and the visible one. */
+export const FINISHED_HISTORY_LIMIT = 20;
+
 export class ManagerError extends Error {
   constructor(
     readonly status: number,
@@ -37,7 +40,7 @@ export class ManagerError extends Error {
   }
 }
 
-export function toRecord(session: SessionRow, roomSlug: string): SessionRecord {
+export function toRecord(session: SessionRow, roomSlug: string, senderActive = false): SessionRecord {
   return {
     sessionId: session.id,
     title: session.title,
@@ -49,16 +52,31 @@ export function toRecord(session: SessionRow, roomSlug: string): SessionRecord {
     createdAt: session.createdAt.toISOString(),
     startedAt: session.startedAt ? session.startedAt.toISOString() : null,
     endedAt: session.endedAt ? session.endedAt.toISOString() : null,
+    senderActive,
   };
 }
 
 export type AttachResult<T extends SenderTarget> = { ok: true; runtime: T; epoch: number; expectedPosition: number } | { ok: false; code: number; reason: string; lastHeardAt?: number };
 
+export interface StartOptions {
+  /** The room's source test the caller agrees to end. A running test with another id refuses the start. */
+  confirmedTestId: string | null;
+}
+
+export interface FinishResult {
+  session: SessionRecord;
+  /** The session was already finished or finishing before this call. */
+  alreadyFinished: boolean;
+}
+
 export interface SessionManager {
   listAdminRooms(): Promise<AdminRoom[]>;
+  getSession(sessionId: string): Promise<SessionRecord | null>;
   prepare(slug: string, input: { title: string; sourceLanguage: SourceLanguage }): Promise<SessionRecord>;
-  start(sessionId: string): Promise<SessionRecord>;
-  finish(sessionId: string): Promise<SessionRecord>;
+  start(sessionId: string, opts: StartOptions): Promise<SessionRecord>;
+  finish(sessionId: string): Promise<FinishResult>;
+  /** Removes a prepared session. Idempotent: a session that no longer exists is not an error. */
+  delete(sessionId: string): Promise<void>;
   attachSender(sessionId: string, link: SenderLink): AttachResult<SessionRuntime>;
   /** A source test for a room without an active session; at most one per room. */
   attachTest(input: SourceTestTarget, link: SenderLink): AttachResult<SourceTestRuntime>;
@@ -74,19 +92,30 @@ export interface ManagerDeps {
   now?: () => number;
 }
 
+/**
+ * Room-level decisions (start, delete, finish) run one at a time per room, in arrival order, and
+ * re-read the row inside their turn: two consoles acting on the same room never decide on the
+ * same stale state. Source tests attach synchronously and are refused while a start is deciding.
+ */
 export class RuntimeSessionManager implements SessionManager {
   private readonly runtimes = new Map<string, SessionRuntime>();
   /** Source tests by room slug. */
   private readonly tests = new Map<string, SourceTestRuntime>();
   private testCounter = 0;
+  private readonly roomLocks = new Map<number, Promise<void>>();
+  private readonly startsInFlight = new Set<number>();
+  private readonly finishes = new Map<string, Promise<FinishResult>>();
+  private disposed = false;
   private readonly store: SessionStore;
   private readonly rooms: RoomRow[];
   private readonly log: Logger;
+  private readonly now: () => number;
 
   constructor(private readonly deps: ManagerDeps) {
     this.store = deps.store;
     this.rooms = deps.rooms;
     this.log = deps.log.child({ component: 'sessions' });
+    this.now = deps.now ?? (() => Date.now());
   }
 
   private roomBySlug(slug: string): RoomRow | null {
@@ -112,6 +141,21 @@ export class RuntimeSessionManager implements SessionManager {
 
   testForRoom(slug: string): SourceTestRuntime | null {
     return this.tests.get(slug) ?? null;
+  }
+
+  /** Runs `fn` after every earlier operation on the room has settled, then releases the room. */
+  private withRoomLock<T>(roomId: number, fn: () => Promise<T>): Promise<T> {
+    const previous = this.roomLocks.get(roomId) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.roomLocks.set(roomId, tail);
+    void tail.then(() => {
+      if (this.roomLocks.get(roomId) === tail) this.roomLocks.delete(roomId);
+    });
+    return run;
   }
 
   /**
@@ -164,7 +208,7 @@ export class RuntimeSessionManager implements SessionManager {
       config: this.deps.config,
       now: this.deps.now,
       onFinished: (runtime: SessionRuntime) => {
-        this.runtimes.delete(runtime.id);
+        if (this.runtimes.get(runtime.id) === runtime) this.runtimes.delete(runtime.id);
       },
     };
   }
@@ -175,7 +219,8 @@ export class RuntimeSessionManager implements SessionManager {
     for (const [index, room] of this.rooms.entries()) {
       const current = fresh.find((r) => r.id === room.id) ?? room;
       room.visibleSessionId = current.visibleSessionId;
-      const sessions = await this.store.listSessions(room.id, 20);
+      const sessions = await this.store.listRoomSessions(room.id, current.visibleSessionId, FINISHED_HISTORY_LIMIT);
+      const test = this.tests.get(room.slug);
       out.push({
         slug: room.slug,
         name: room.name,
@@ -185,13 +230,26 @@ export class RuntimeSessionManager implements SessionManager {
           const runtime = this.runtimes.get(s.id);
           return runtime ? this.recordOf(runtime) : toRecord(s, room.slug);
         }),
+        test: test ? this.testRecord(test) : null,
       });
     }
     return out;
   }
 
+  private testRecord(test: SourceTestRuntime): AdminSourceTest {
+    return { id: test.id, sourceLanguage: test.sourceLanguage, startedAt: new Date(test.startedAt).toISOString() };
+  }
+
   private recordOf(runtime: SessionRuntime): SessionRecord {
-    return toRecord({ ...runtime.session, state: runtime.state, cause: runtime.cause, completeness: runtime.completeness }, runtime.room.slug);
+    return toRecord({ ...runtime.session, state: runtime.state, cause: runtime.cause, completeness: runtime.completeness }, runtime.room.slug, runtime.senderActive);
+  }
+
+  async getSession(sessionId: string): Promise<SessionRecord | null> {
+    const runtime = this.runtimes.get(sessionId);
+    if (runtime) return this.recordOf(runtime);
+    const session = await this.store.getSession(sessionId);
+    if (!session) return null;
+    return toRecord(session, this.roomById(session.roomId)?.slug ?? '');
   }
 
   async prepare(slug: string, input: { title: string; sourceLanguage: SourceLanguage }): Promise<SessionRecord> {
@@ -204,12 +262,31 @@ export class RuntimeSessionManager implements SessionManager {
     return toRecord(session, room.slug);
   }
 
-  async start(sessionId: string): Promise<SessionRecord> {
+  async start(sessionId: string, opts: StartOptions): Promise<SessionRecord> {
+    const first = await this.store.getSession(sessionId);
+    if (!first) throw new ManagerError(404, 'session_not_found');
+    const room = this.roomById(first.roomId);
+    if (!room) throw new ManagerError(404, 'room_not_found');
+    return this.withRoomLock(room.id, async () => {
+      this.startsInFlight.add(room.id);
+      try {
+        return await this.startLocked(sessionId, room, opts);
+      } finally {
+        this.startsInFlight.delete(room.id);
+      }
+    });
+  }
+
+  private async startLocked(sessionId: string, room: RoomRow, opts: StartOptions): Promise<SessionRecord> {
+    if (this.disposed) throw new ManagerError(503, 'shutting_down');
+    // Decided on the row as it is now: an earlier turn may have deleted or started it.
     const session = await this.store.getSession(sessionId);
     if (!session) throw new ManagerError(404, 'session_not_found');
-    const room = this.roomById(session.roomId);
-    if (!room) throw new ManagerError(404, 'room_not_found');
     if (session.state !== 'prepared') throw new ManagerError(409, 'not_prepared', { state: session.state });
+    const test = this.tests.get(room.slug) ?? null;
+    if (test && test.id !== opts.confirmedTestId) {
+      throw new ManagerError(409, 'test_active', { testId: test.id, testSourceLanguage: test.sourceLanguage });
+    }
     const blocking = await this.store.findBlockingSession(room.id, session.id);
     if (blocking) throw new ManagerError(409, 'room_busy', { blockingSessionId: blocking.id, blockingTitle: blocking.title, blockingState: blocking.state });
     // Read once, before the state write: the recorded configuration and the runtime see the same rows.
@@ -231,9 +308,19 @@ export class RuntimeSessionManager implements SessionManager {
     } catch (error) {
       // Two starts in the same room raced past the check: the partial unique index rejects the second.
       if ((error as { code?: string }).code === '23505') throw new ManagerError(409, 'room_busy');
-      throw error;
+      this.log.warn('start write failed; reconciling', { sessionId: session.id, error: (error as Error).message });
+      started = await this.reconcileStart(session.id);
     }
-    if (!started) throw new ManagerError(409, 'not_prepared');
+    if (!started) {
+      const now = await this.store.getSession(session.id);
+      if (!now) throw new ManagerError(404, 'session_not_found');
+      throw new ManagerError(409, 'not_prepared', { state: now.state });
+    }
+    if (this.disposed) {
+      // The row is `starting`; the next boot recovers it as interrupted.
+      this.log.warn('start committed during shutdown; no runtime created', { sessionId: session.id });
+      return toRecord(started, room.slug);
+    }
     const runtime = new SessionRuntime(this.runtimeDeps(), started, room, streams, {
       counters: new Map(),
       eventSeq: 0,
@@ -241,25 +328,102 @@ export class RuntimeSessionManager implements SessionManager {
       hubSession: null,
     });
     this.runtimes.set(session.id, runtime);
-    // The room is taken: a source test in it ends before the session's sender can attach.
-    this.tests.get(room.slug)?.end('session_started');
-    this.log.info('session starting', { sessionId: session.id, room: room.slug, sourceLanguage: session.sourceLanguage });
+    // The room is taken: the confirmed test (still the same one, tests cannot attach meanwhile) ends
+    // before the session's sender can attach.
+    const current = this.tests.get(room.slug);
+    if (current && current === test) current.end('session_started');
+    this.log.info('session starting', { sessionId: session.id, room: room.slug, sourceLanguage: session.sourceLanguage, confirmedTest: test?.id ?? null });
     return this.recordOf(runtime);
   }
 
-  async finish(sessionId: string): Promise<SessionRecord> {
-    const runtime = this.runtimes.get(sessionId);
-    if (runtime) {
-      await runtime.finish('http');
-      return this.recordOf(runtime);
+  /**
+   * The start write failed without saying whether it committed. Within the room's turn nobody else
+   * writes this row, so a row now in `starting` is ours; one still `prepared` means the write was lost.
+   */
+  private async reconcileStart(sessionId: string): Promise<SessionRow | null> {
+    const budget = this.deps.config.retryBudgetMs ?? 10000;
+    const interval = this.deps.config.retryIntervalMs ?? 500;
+    const startedAt = this.now();
+    for (;;) {
+      try {
+        const row = await this.store.getSession(sessionId);
+        if (!row) throw new ManagerError(404, 'session_not_found');
+        if (row.state === 'starting') return row;
+        if (row.state !== 'prepared') throw new ManagerError(409, 'not_prepared', { state: row.state });
+      } catch (error) {
+        if (error instanceof ManagerError) throw error;
+        this.log.warn('start reconciliation read failed', { sessionId, error: (error as Error).message });
+      }
+      if (this.now() - startedAt + interval > budget) throw new ManagerError(503, 'storage_unavailable');
+      await new Promise((resolve) => setTimeout(resolve, interval));
     }
-    const session = await this.store.getSession(sessionId);
-    if (!session) throw new ManagerError(404, 'session_not_found');
-    const room = this.roomById(session.roomId);
-    if (session.state === 'prepared') throw new ManagerError(409, 'not_started');
-    // `finishing` without a runtime: the session finished in memory and its write is still being retried.
-    if (session.state === 'finished' || session.state === 'finishing') return toRecord(session, room?.slug ?? '');
-    throw new ManagerError(409, 'not_controllable', { state: session.state });
+  }
+
+  async delete(sessionId: string): Promise<void> {
+    const first = await this.store.getSession(sessionId);
+    if (!first) return;
+    return this.withRoomLock(first.roomId, async () => {
+      if (this.disposed) throw new ManagerError(503, 'shutting_down');
+      const runtime = this.runtimes.get(sessionId);
+      if (runtime) throw new ManagerError(409, 'not_deletable', { state: runtime.state });
+      let result: Awaited<ReturnType<SessionStore['deleteSession']>>;
+      try {
+        result = await this.store.deleteSession(sessionId);
+      } catch (error) {
+        this.log.warn('delete failed; checking the row', { sessionId, error: (error as Error).message });
+        let row: SessionRow | null;
+        try {
+          row = await this.store.getSession(sessionId);
+        } catch {
+          throw new ManagerError(503, 'storage_unavailable');
+        }
+        if (!row) return;
+        throw new ManagerError(503, 'storage_unavailable');
+      }
+      if (result === 'deleted' || result === 'missing') {
+        if (result === 'deleted') this.log.info('session deleted', { sessionId, room: this.roomById(first.roomId)?.slug ?? null });
+        return;
+      }
+      if (result === 'has_data') throw new ManagerError(409, 'session_has_data');
+      const row = await this.store.getSession(sessionId);
+      throw new ManagerError(409, 'not_deletable', { state: row?.state ?? 'unknown' });
+    });
+  }
+
+  finish(sessionId: string): Promise<FinishResult> {
+    // Two consoles finishing the same session share one outcome instead of racing the runtime.
+    const inFlight = this.finishes.get(sessionId);
+    if (inFlight) return inFlight;
+    const promise = this.finishOnce(sessionId).finally(() => {
+      if (this.finishes.get(sessionId) === promise) this.finishes.delete(sessionId);
+    });
+    this.finishes.set(sessionId, promise);
+    return promise;
+  }
+
+  private async finishOnce(sessionId: string): Promise<FinishResult> {
+    const roomId = this.runtimes.get(sessionId)?.room.id ?? (await this.store.getSession(sessionId))?.roomId;
+    if (roomId === undefined) throw new ManagerError(404, 'session_not_found');
+    return this.withRoomLock(roomId, async () => {
+      const runtime = this.runtimes.get(sessionId);
+      if (runtime) {
+        const alreadyFinished = runtime.state === 'finished' || runtime.state === 'finishing';
+        await runtime.finish('http');
+        return { session: this.recordOf(runtime), alreadyFinished };
+      }
+      const session = await this.store.getSession(sessionId);
+      if (!session) throw new ManagerError(404, 'session_not_found');
+      const slug = this.roomById(session.roomId)?.slug ?? '';
+      if (session.state === 'prepared') throw new ManagerError(409, 'not_started');
+      // `finishing` without a runtime: the session finished in memory and its write is still being retried.
+      if (session.state === 'finished' || session.state === 'finishing') return { session: toRecord(session, slug), alreadyFinished: true };
+      // A started row without a runtime (its start committed while the process was stopping): finish it directly.
+      this.log.warn('finishing a session without a runtime', { sessionId, state: session.state });
+      const streams = await this.store.loadStreams(sessionId);
+      await this.store.markFinished(sessionId, null, streams.map((s) => ({ streamId: s.id, publishedSeq: null })));
+      const finished = (await this.store.getSession(sessionId)) ?? { ...session, state: 'finished' as const, cause: null };
+      return { session: toRecord(finished, slug), alreadyFinished: false };
+    });
   }
 
   attachSender(sessionId: string, link: SenderLink): AttachResult<SessionRuntime> {
@@ -273,6 +437,8 @@ export class RuntimeSessionManager implements SessionManager {
   attachTest(input: SourceTestTarget, link: SenderLink): AttachResult<SourceTestRuntime> {
     const room = this.roomBySlug(input.room);
     if (!room) return { ok: false, code: SENDER_CLOSE.NOT_JOINABLE, reason: 'room-not-found' };
+    // A start is deciding on this room, or the process is stopping: no new test may slip in.
+    if (this.disposed || this.startsInFlight.has(room.id)) return { ok: false, code: SENDER_CLOSE.SENDER_ACTIVE, reason: 'room-busy' };
     // A `finish()` from `starting` leaves a finished runtime in the map while its write runs; that room is free.
     const active = this.runtimeForRoom(room.id);
     if (active && active.state !== 'finished') return { ok: false, code: SENDER_CLOSE.SENDER_ACTIVE, reason: 'room-busy' };
@@ -298,6 +464,7 @@ export class RuntimeSessionManager implements SessionManager {
   }
 
   dispose() {
+    this.disposed = true;
     for (const runtime of this.runtimes.values()) runtime.dispose();
     for (const test of this.tests.values()) test.dispose();
     this.tests.clear();

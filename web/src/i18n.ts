@@ -70,6 +70,10 @@ export interface Strings {
   loadingAdmin: string;
   /** Rendered by the entry point when the runtime configuration cannot be fetched. */
   configLoadFailed: string;
+  /** Header chip on every page while the server runs in demo mode. */
+  demoChip: string;
+  /** Link to the console, shown on public pages in demo mode. */
+  adminLink: string;
 }
 
 export const STRINGS: Record<Language, Strings> = {
@@ -114,6 +118,8 @@ export const STRINGS: Record<Language, Strings> = {
     gapTitle: (seconds) => (seconds === null ? 'Tramo perdido de extensión desconocida' : `Tramo perdido: ${seconds} s`),
     loadingAdmin: 'Cargando administración…',
     configLoadFailed: 'No se pudo cargar la configuración. Recargá la página.',
+    demoChip: 'Modo demo',
+    adminLink: 'Administración',
   },
   en: {
     appTitle: 'Captions',
@@ -156,6 +162,8 @@ export const STRINGS: Record<Language, Strings> = {
     gapTitle: (seconds) => (seconds === null ? 'Lost stretch of unknown length' : `Lost stretch: ${seconds} s`),
     loadingAdmin: 'Loading administration…',
     configLoadFailed: 'The configuration could not be loaded. Reload the page.',
+    demoChip: 'Demo mode',
+    adminLink: 'Administration',
   },
 };
 

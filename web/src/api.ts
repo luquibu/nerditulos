@@ -1,4 +1,4 @@
-import type { AdminRoom, PublicRoom, RuntimeConfig, SessionRecord } from '@nerditulos/shared';
+import type { AdminRoom, FinishSessionResponse, PublicRoom, RuntimeConfig, SessionRecord, StartSessionRequest } from '@nerditulos/shared';
 
 export class ApiError extends Error {
   constructor(
@@ -39,6 +39,7 @@ export async function fetchRoom(slug: string): Promise<PublicRoom> {
   return parse<PublicRoom>(await fetch(`/api/rooms/${encodeURIComponent(slug)}`, { cache: 'no-store' }));
 }
 
+/** Supplies the Clerk session token, or null when there is none (demo mode, signed out). */
 export type TokenSupplier = () => Promise<string | null>;
 
 async function adminFetch<T>(getToken: TokenSupplier, path: string, init: RequestInit = {}): Promise<T> {
@@ -49,16 +50,25 @@ async function adminFetch<T>(getToken: TokenSupplier, path: string, init: Reques
   return parse<T>(await fetch(path, { ...init, headers, cache: 'no-store' }));
 }
 
+/** `GET /api/admin/me`: how the server sees this browser. */
+export type AdminMe = { mode: 'demo' } | { mode: 'clerk'; userId: string; exp: number };
+
 export const adminApi = {
-  me: (getToken: TokenSupplier) => adminFetch<{ userId: string }>(getToken, '/api/admin/me'),
+  me: (getToken: TokenSupplier) => adminFetch<AdminMe>(getToken, '/api/admin/me'),
   rooms: (getToken: TokenSupplier) => adminFetch<{ rooms: AdminRoom[] }>(getToken, '/api/admin/rooms'),
+  session: (getToken: TokenSupplier, sessionId: string) => adminFetch<{ session: SessionRecord }>(getToken, `/api/admin/sessions/${encodeURIComponent(sessionId)}`),
   prepare: (getToken: TokenSupplier, slug: string, input: { title: string; sourceLanguage: 'es' | 'en' }) =>
     adminFetch<{ session: SessionRecord }>(getToken, `/api/admin/rooms/${encodeURIComponent(slug)}/sessions`, {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  start: (getToken: TokenSupplier, sessionId: string) =>
-    adminFetch<{ session: SessionRecord }>(getToken, `/api/admin/sessions/${encodeURIComponent(sessionId)}/start`, { method: 'POST' }),
+  start: (getToken: TokenSupplier, sessionId: string, input: StartSessionRequest = {}) =>
+    adminFetch<{ session: SessionRecord }>(getToken, `/api/admin/sessions/${encodeURIComponent(sessionId)}/start`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   finish: (getToken: TokenSupplier, sessionId: string) =>
-    adminFetch<{ session: SessionRecord }>(getToken, `/api/admin/sessions/${encodeURIComponent(sessionId)}/finish`, { method: 'POST' }),
+    adminFetch<FinishSessionResponse>(getToken, `/api/admin/sessions/${encodeURIComponent(sessionId)}/finish`, { method: 'POST' }),
+  delete: (getToken: TokenSupplier, sessionId: string) =>
+    adminFetch<null>(getToken, `/api/admin/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
 };

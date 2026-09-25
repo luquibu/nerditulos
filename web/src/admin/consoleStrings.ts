@@ -134,6 +134,37 @@ export interface ConsoleStrings extends Strings {
   roomBusy: (blockingTitle: string) => string;
   /** Stands in for the blocking session's title when the server did not send it. */
   otherSession: string;
+
+  // Shared administration (several consoles on the same rooms)
+  /** Account menu text in demo mode, where there is no account. */
+  demoIdentity: string;
+  demoDisabled: string;
+  reload: string;
+  originNotAllowed: (origin: string) => string;
+  /** Console opened at a room slug that does not exist, or at `/admin` before a room is chosen. */
+  chooseRoom: string;
+  /** Attach this console's source to a started session that has no sender. */
+  connectSource: string;
+  sourceOff: string;
+  reopenSource: string;
+  sourceOffHint: string;
+  testMicrophoneIn: (lang: string) => string;
+  testFileIn: (lang: string) => string;
+  delete: string;
+  deleteDialogTitle: string;
+  deleteDialogBody: (title: string) => string;
+  deleteSession: string;
+  deleteFailed: (code: string | null) => string;
+  deletedMeanwhile: string;
+  notDeletable: string;
+  startConfirmTitle: string;
+  startConfirmBody: (lang: string) => string;
+  startAnyway: string;
+  testChanged: string;
+  startNotPrepared: string;
+  startResponseLost: string;
+  alreadyFinished: string;
+  finishDialogSession: (title: string) => string;
 }
 
 export type ConsoleOnlyStrings = Omit<ConsoleStrings, keyof Strings>;
@@ -266,6 +297,33 @@ export const CONSOLE_ONLY: Record<Language, ConsoleOnlyStrings> = {
     finishFailed: (code) => (code ? `No se pudo finalizar (${code}).` : 'No se pudo finalizar la sesión.'),
     roomBusy: (blocking) => `La sala ya tiene una sesión activa (${blocking}). Finalizala antes de iniciar otra.`,
     otherSession: 'otra sesión',
+
+    demoIdentity: 'Modo demo: sin cuenta. Cualquiera con la URL puede administrar las salas.',
+    demoDisabled: 'El modo demo se desactivó en el servidor. Recargá la página para ingresar con tu cuenta.',
+    reload: 'Recargar',
+    originNotAllowed: (origin) => `El servidor rechazó la acción por el origen de esta página. Abrí la consola desde ${origin}.`,
+    chooseRoom: 'Elegí una sala.',
+    connectSource: 'Conectar fuente',
+    sourceOff: 'Fuente apagada',
+    reopenSource: 'Volver a abrir',
+    sourceOffHint: 'La fuente quedó apagada al terminar. Volvé a abrirla para probar o iniciar otra sesión.',
+    testMicrophoneIn: (lang) => `Probar micrófono (${lang})`,
+    testFileIn: (lang) => `Probar archivo (${lang})`,
+    delete: 'Eliminar',
+    deleteDialogTitle: 'Eliminar la preparación',
+    deleteDialogBody: (title) => `Se elimina "${title}" de esta sala. No se puede deshacer.`,
+    deleteSession: 'Eliminar sesión',
+    deleteFailed: (code) => (code ? `No se pudo eliminar (${code}).` : 'No se pudo eliminar la sesión.'),
+    deletedMeanwhile: 'Esa preparación ya no existe.',
+    notDeletable: 'No se puede eliminar: la sesión ya se inició.',
+    startConfirmTitle: 'Interrumpir la prueba en curso',
+    startConfirmBody: (lang) => `Otra consola está probando una fuente en esta sala (${lang}). Iniciar la sesión termina esa prueba.`,
+    startAnyway: 'Terminar la prueba e iniciar',
+    testChanged: 'La prueba de esta sala cambió. Revisá y confirmá de nuevo.',
+    startNotPrepared: 'Esa sesión ya no está preparada: otra consola la inició o la eliminó.',
+    startResponseLost: 'No llegó la respuesta del inicio; se consultó el estado de la sesión.',
+    alreadyFinished: 'Esa sesión ya había finalizado.',
+    finishDialogSession: (title) => `Sesión: ${title}`,
   },
   en: {
     consoleTitle: 'Console',
@@ -394,6 +452,33 @@ export const CONSOLE_ONLY: Record<Language, ConsoleOnlyStrings> = {
     finishFailed: (code) => (code ? `Could not finish (${code}).` : 'The session could not be finished.'),
     roomBusy: (blocking) => `The room already has an active session (${blocking}). Finish it before starting another.`,
     otherSession: 'another session',
+
+    demoIdentity: 'Demo mode: no account. Anyone with the URL can administer the rooms.',
+    demoDisabled: 'Demo mode was turned off on the server. Reload the page to sign in with your account.',
+    reload: 'Reload',
+    originNotAllowed: (origin) => `The server refused the action because of this page's origin. Open the console from ${origin}.`,
+    chooseRoom: 'Choose a room.',
+    connectSource: 'Connect source',
+    sourceOff: 'Source off',
+    reopenSource: 'Open again',
+    sourceOffHint: 'The source was switched off when the run ended. Open it again to test or start another session.',
+    testMicrophoneIn: (lang) => `Test microphone (${lang})`,
+    testFileIn: (lang) => `Test file (${lang})`,
+    delete: 'Delete',
+    deleteDialogTitle: 'Delete the prepared session',
+    deleteDialogBody: (title) => `"${title}" is removed from this room. This cannot be undone.`,
+    deleteSession: 'Delete session',
+    deleteFailed: (code) => (code ? `Could not delete (${code}).` : 'The session could not be deleted.'),
+    deletedMeanwhile: 'That prepared session no longer exists.',
+    notDeletable: 'Cannot delete: the session already started.',
+    startConfirmTitle: 'Interrupt the running test',
+    startConfirmBody: (lang) => `Another console is testing a source in this room (${lang}). Starting the session ends that test.`,
+    startAnyway: 'End the test and start',
+    testChanged: 'The test in this room changed. Check and confirm again.',
+    startNotPrepared: 'That session is no longer prepared: another console started or deleted it.',
+    startResponseLost: 'The start response did not arrive; the session state was checked.',
+    alreadyFinished: 'That session had already finished.',
+    finishDialogSession: (title) => `Session: ${title}`,
   },
 };
 

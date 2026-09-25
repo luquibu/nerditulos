@@ -24,7 +24,7 @@ Each result must identify the tested revision and supporting evidence. Record fa
 
 | ID | Verifiable result | Status |
 | --- | --- | --- |
-| C01 | Clean installation with own accounts, authorized administrator, and HTTPS from another device. Visitors and other accounts cannot control rooms or send audio. | Pending |
+| C01 | Clean installation with own accounts, authorized administrator, and HTTPS from another device. Visitors and other accounts cannot control rooms or send audio unless the installation runs with the explicit `DEMO_MODE=true` switch. | Pending |
 | C02 | Two ES/EN samples use the real path; microphone or mixing-console input also works. Denied permission and missing sources have distinct diagnostics. | Pending |
 | C03 | Two rooms with different content run for 30 minutes, including renewal during speech. No cross-room content, duplicates, or planned-handover loss. | Pending |
 | C04 | ES/EN transcription and EN→ES and ES→EN translation appear in the selected language. Partials are replaceable; finals are persisted and ordered; translations are shared among readers. A session offers only the languages it has streams for. | Pending |
@@ -33,9 +33,10 @@ Each result must identify the tested revision and supporting evidence. Record fa
 | C07 | Internal navigation preserves capture; reject a second sender. Cutting one input does not stop another room. Reconnection preserves identity and marks unexpected loss. | Pending |
 | C08 | Manual finish, file end, or failure during draining closes within the configured limit and identifies failed pending output. Preparing another talk preserves old text; starting changes identity and cursor. | Pending |
 | C09 | Reader reload does not duplicate text. Old cursors/IDs expose no history. Restart preserves finals and marks active sessions interrupted. | Pending |
-| C10 | No secrets in clients or logs. Expired authentication closes or revalidates channels. Replacing the administrator and restarting invalidates previous connections. | Pending |
+| C10 | No secrets in clients or logs. Expired authentication closes or revalidates channels. Replacing the administrator and restarting invalidates previous connections. Turning demo mode off invalidates anonymous console tabs on their next request. | Pending |
 | C11 | Keyboard, focus, contrast, mobile, zoom, and accessible announcements meet the reading contract below. Record tested browsers and devices. | Pending |
 | C12 | Reproducible installation, documented consumption and cost per room-hour, tested capacity distinct from estimates, and required licenses present. | Pending |
+| C13 | Two administrators operate simultaneously from independent browsers, in demo mode and with Clerk: one session starts per room; a second source, a second test, and a start over another console's test are refused or require a bound confirmation; deleting and finishing another console's session never touches the other console's source; prepared sessions, drafts, and the visible session survive the other console's actions. | Pending |
 
 ## Contracts needed to run the checks
 

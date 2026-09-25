@@ -155,6 +155,14 @@ export function RoomPage({ config, slug }: { config: RuntimeConfig; slug: string
           <a href={roomsHref} onClick={onLinkClick} aria-label={d.roomsLink}>
             <img className="listener__logo" src="/brand/nerdearla-simplified.svg" alt="Nerdearla" />
           </a>
+          {config.demoMode && (
+            <>
+              <span className="chip chip--status-warning">{d.demoChip}</span>
+              <a className="chip chip--link chip--status-off" href={hrefWithLang('/admin', explicitLang)} onClick={onLinkClick}>
+                {d.adminLink}
+              </a>
+            </>
+          )}
         </div>
         <h1 className="listener__title">{session?.title ?? roomInfo?.name ?? d.roomFallback}</h1>
         <div className="listener__chips">
